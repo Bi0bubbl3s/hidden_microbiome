@@ -1,6 +1,6 @@
 // @ts-nocheck
 import React, { useState } from 'react';
-import { FilePlus, CheckSquare, Search } from 'lucide-react';
+import { FilePlus, CheckSquare, Search, ExternalLink, Dna } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
 import api from '../utils/api'; 
 
@@ -43,13 +43,13 @@ const MapClickHandler = ({ setFormData }) => {
 const CaptureScreen = ({ masterData, notify, refreshData }) => {
   const [formData, setFormData] = useState({
     crop_species_id: '', 
-    new_crop_name: '',       // <-- ADD THIS
-    new_crop_scientific: '', // <-- ADD THIS
-    new_crop_group: '',      // <-- ADD THIS  
+    new_crop_name: '',
+    new_crop_scientific: '',
+    new_crop_group: '',
     latitude: '',          
     longitude: '',      
-    location_estimated: false,  // <-- ADD THIS LINE   
-    endophyte_ids: [],     // NEW: Changed to array for multiple selections
+    location_estimated: false,
+    endophyte_ids: [],
     plant_structure_ids: [], 
     reference_id: '',
     new_reference_title: '',
@@ -57,14 +57,19 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
     new_reference_link: '',
     new_endophyte_name: '',
     new_endophyte_type_id: '',
+    sequencing_method_id: '',
+    new_sequencing_name: '',
+    new_sequencing_platform: '',
+    ncbi_accession: '',
     observation_date: new Date().toISOString().split('T')[0],
     created_by: 'Researcher Admin'
   });
 
-  const [isNewCrop, setIsNewCrop] = useState(false); // <-- ADD THIS
+  const [isNewCrop, setIsNewCrop] = useState(false);
   const [isNewReference, setIsNewReference] = useState(false);
   const [isNewEndophyte, setIsNewEndophyte] = useState(false);
-  const [endoSearch, setEndoSearch] = useState(''); // Helps filter long lists!
+  const [isNewSequencingMethod, setIsNewSequencingMethod] = useState(false);
+  const [endoSearch, setEndoSearch] = useState('');
 
   const handleStructureToggle = (structureId) => {
     setFormData((prev) => {
@@ -75,7 +80,6 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
     });
   };
 
-  // NEW: Handler for multiple endophyte checkboxes
   const handleEndophyteToggle = (endoId) => {
     setFormData((prev) => {
       const currentIds = prev.endophyte_ids;
@@ -98,11 +102,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
 
     try {
       let finalReferenceId = formData.reference_id ? parseInt(formData.reference_id) : null;
-      
-      // Convert existing checked endophytes to integers
       let finalEndophyteIds = [...formData.endophyte_ids.map(id => parseInt(id))];
-
-      // --- ADD THIS BLOCK ---
       let finalCropId = formData.crop_species_id ? parseInt(formData.crop_species_id) : null;
 
       if (isNewCrop && formData.new_crop_name && formData.new_crop_group) {
@@ -114,7 +114,6 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
         const newCrop = await api.post('/crops/', cropPayload);
         finalCropId = newCrop.crop_species_id;
       }
-      // ----------------------
 
       if (isNewReference && formData.new_reference_title) {
         const refPayload = {
@@ -126,7 +125,6 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
         finalReferenceId = newRef.reference_id; 
       }
 
-      // If they added a new endophyte, create it and push the new ID into our list!
       if (isNewEndophyte && formData.new_endophyte_name && formData.new_endophyte_type_id) {
         const endoPayload = {
           scientific_name: formData.new_endophyte_name,
@@ -136,14 +134,36 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
         finalEndophyteIds.push(newEndo.endophyte_id);
       }
 
+      // Handle Sequencing Method (Selected or New)
+      let finalSequencingMethodId = formData.sequencing_method_id ? parseInt(formData.sequencing_method_id) : null;
+      let finalSequencingMethodName = null;
+
+      if (isNewSequencingMethod && formData.new_sequencing_name) {
+        const seqPayload = {
+          method_name: formData.new_sequencing_name,
+          platform_type: formData.new_sequencing_platform || null
+        };
+        const newSeq = await api.post('/sequencing-methods/', seqPayload);
+        finalSequencingMethodId = newSeq.sequencing_method_id;
+        finalSequencingMethodName = newSeq.method_name;
+      } else if (finalSequencingMethodId) {
+        const found = masterData.sequencingMethods?.find(s => s.sequencing_method_id === finalSequencingMethodId);
+        if (found) finalSequencingMethodName = found.method_name;
+      }
+
+      const cleanAccession = formData.ncbi_accession ? formData.ncbi_accession.trim().toUpperCase() : null;
+
       const fullPayload = {
-        crop_species_id: finalCropId, // <-- UPDATE THIS LINE
+        crop_species_id: finalCropId,
         latitude: parseFloat(formData.latitude),
         longitude: parseFloat(formData.longitude),
-        location_estimated: formData.location_estimated, // <-- ADD THIS LINE
-        endophyte_ids: finalEndophyteIds, // Send the array!
+        location_estimated: formData.location_estimated,
+        endophyte_ids: finalEndophyteIds,
         plant_structure_ids: formData.plant_structure_ids.map(id => parseInt(id)),
         reference_id: finalReferenceId,
+        sequencing_method_id: finalSequencingMethodId,
+        sequencing_method: finalSequencingMethodName,
+        ncbi_accession: cleanAccession,
         observation_date: formData.observation_date,
         created_by: formData.created_by
       };
@@ -154,16 +174,20 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
       refreshData();
       
       setFormData({ 
-        crop_species_id: '', new_crop_name: '', new_crop_scientific: '', new_crop_group: '', // <-- UPDATE THIS LINE
+        crop_species_id: '', new_crop_name: '', new_crop_scientific: '', new_crop_group: '',
         latitude: '', longitude: '', location_estimated: false,
         endophyte_ids: [], plant_structure_ids: [], reference_id: '',
         new_reference_title: '', new_reference_year: '', new_reference_link: '',
         new_endophyte_name: '', new_endophyte_type_id: '',
+        sequencing_method_id: '', new_sequencing_name: '', new_sequencing_platform: '',
+        ncbi_accession: '',
         observation_date: new Date().toISOString().split('T')[0],
         created_by: 'Researcher Admin'
       });
+      setIsNewCrop(false);
       setIsNewReference(false); 
       setIsNewEndophyte(false);
+      setIsNewSequencingMethod(false);
       setEndoSearch('');
     } catch (error) {
       notify(error.message, 'error');
@@ -432,6 +456,105 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
               onChange={(e) => setFormData({...formData, observation_date: e.target.value})}
               className="w-full rounded-lg border-slate-300 border p-2.5 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50"
             />
+          </div>
+
+          {/* NEW: Genomic & Sequencing Data Section */}
+          <div className="space-y-4 md:col-span-2 bg-slate-50 p-5 rounded-xl border border-slate-200">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+              <div className="flex items-center space-x-2">
+                <Dna className="w-5 h-5 text-emerald-600" />
+                <h3 className="text-sm font-semibold text-slate-800">Genomic & Sequencing Data</h3>
+              </div>
+              <span className="text-xs text-slate-400">Taxonomic & molecular evidence</span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 pt-1">
+              {/* Field 1: Sequencing Method */}
+              <div className="space-y-2">
+                <div className="flex justify-between items-center mb-1">
+                  <label className="block text-sm font-medium text-slate-700">Sequencing Method</label>
+                  <button 
+                    type="button" 
+                    onClick={() => setIsNewSequencingMethod(!isNewSequencingMethod)} 
+                    className="text-xs font-medium text-emerald-600 hover:text-emerald-700 hover:underline"
+                  >
+                    {isNewSequencingMethod ? "Select Existing" : "+ Add New Method"}
+                  </button>
+                </div>
+
+                {!isNewSequencingMethod ? (
+                  <select 
+                    value={formData.sequencing_method_id}
+                    onChange={(e) => setFormData({...formData, sequencing_method_id: e.target.value})}
+                    className="w-full rounded-lg border-slate-300 border p-2.5 focus:ring-emerald-500 focus:border-emerald-500 bg-white text-sm"
+                  >
+                    <option value="">Select Sequencing Type...</option>
+                    {masterData.sequencingMethods?.map(s => (
+                      <option key={s.sequencing_method_id} value={s.sequencing_method_id}>
+                        {s.method_name} {s.platform_type ? `(${s.platform_type})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="space-y-3 p-3.5 border border-emerald-200 bg-emerald-50/70 rounded-lg">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">Method Name *</label>
+                      <input 
+                        type="text" 
+                        required={isNewSequencingMethod}
+                        placeholder="e.g. Sanger, NGS - WGS, Amplicon 16S"
+                        value={formData.new_sequencing_name}
+                        onChange={(e) => setFormData({...formData, new_sequencing_name: e.target.value})}
+                        className="w-full rounded border-slate-300 border p-2 text-xs focus:ring-emerald-500 focus:border-emerald-500 bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">Platform / Instrument (Optional)</label>
+                      <input 
+                        type="text" 
+                        placeholder="e.g. Illumina MiSeq, Oxford Nanopore MinION"
+                        value={formData.new_sequencing_platform}
+                        onChange={(e) => setFormData({...formData, new_sequencing_platform: e.target.value})}
+                        className="w-full rounded border-slate-300 border p-2 text-xs focus:ring-emerald-500 focus:border-emerald-500 bg-white"
+                      />
+                    </div>
+                  </div>
+                )}
+                <p className="text-xs text-slate-400">Specifies Sanger, NGS WGS, amplicon metabarcoding, or long-read technology.</p>
+              </div>
+
+              {/* Field 2: NCBI Accession Number */}
+              <div className="space-y-2">
+                <div className="flex justify-between items-center mb-1">
+                  <label className="block text-sm font-medium text-slate-700">NCBI Accession Number</label>
+                  {formData.ncbi_accession && (
+                    <a
+                      href={`https://www.ncbi.nlm.nih.gov/search/all/?term=${encodeURIComponent(formData.ncbi_accession.trim())}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 hover:underline flex items-center gap-1"
+                      title="Open accession on NCBI database"
+                    >
+                      <span>Verify on NCBI</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
+                </div>
+
+                <div>
+                  <input 
+                    type="text" 
+                    placeholder="e.g. OQ542198, PRJNA912834, SRR21894012"
+                    value={formData.ncbi_accession}
+                    onChange={(e) => setFormData({...formData, ncbi_accession: e.target.value.toUpperCase()})}
+                    className="w-full rounded-lg border-slate-300 border p-2.5 focus:ring-emerald-500 focus:border-emerald-500 bg-white text-sm font-mono"
+                  />
+                </div>
+                <p className="text-xs text-slate-400">
+                  GenBank, SRA, BioProject, or BioSample accession assigned by NCBI to your sample.
+                </p>
+              </div>
+            </div>
           </div>
 
            <div className="space-y-2 md:col-span-2">

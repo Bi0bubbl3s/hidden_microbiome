@@ -57,19 +57,44 @@ const MapScreen = ({ specimens, observations }) => {
                 <th className="px-6 py-3">ID</th>
                 <th className="px-6 py-3">Specimen</th>
                 <th className="px-6 py-3">Endophyte</th>
+                <th className="px-6 py-3">Sequencing Method</th>
+                <th className="px-6 py-3">NCBI Accession</th>
                 <th className="px-6 py-3">Date</th>
               </tr>
             </thead>
             <tbody>
               {observations.length === 0 ? (
-                <tr><td colSpan="4" className="px-6 py-4 text-center text-slate-500">No observations recorded yet.</td></tr>
+                <tr><td colSpan="6" className="px-6 py-4 text-center text-slate-500">No observations recorded yet.</td></tr>
               ) : (
                 observations.map((obs) => (
                   <tr key={obs.observation_id} className="border-b hover:bg-slate-50">
                     <td className="px-6 py-4 font-medium text-slate-900">#{obs.observation_id}</td>
                     <td className="px-6 py-4">Specimen #{obs.plant_specimen_id}</td>
                     <td className="px-6 py-4">Endophyte #{obs.endophyte_id}</td>
-                    <td className="px-6 py-4">{new Date(obs.observation_date).toLocaleDateString()}</td>
+                    <td className="px-6 py-4 text-slate-700">
+                      {obs.sequencing_method ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
+                          {obs.sequencing_method}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 text-xs italic">-</span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 font-mono text-xs">
+                      {obs.ncbi_accession ? (
+                        <a 
+                          href={`https://www.ncbi.nlm.nih.gov/search/all/?term=${encodeURIComponent(obs.ncbi_accession)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-emerald-700 hover:text-emerald-900 hover:underline font-semibold"
+                        >
+                          {obs.ncbi_accession} ↗
+                        </a>
+                      ) : (
+                        <span className="text-slate-400 font-sans italic">-</span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 text-slate-600">{new Date(obs.observation_date).toLocaleDateString()}</td>
                   </tr>
                 ))
               )}

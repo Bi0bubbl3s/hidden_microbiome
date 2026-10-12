@@ -34,7 +34,7 @@ export default function App() {
 
   const [masterData, setMasterData] = useState({
     crops: [], endophyteTypes: [], endophytes: [], structures: [], 
-    references: [], specimens: [], observations: []
+    references: [], specimens: [], observations: [], sequencingMethods: []
   });
 
   const showToast = (text, type = 'success') => {
@@ -44,27 +44,51 @@ export default function App() {
 
   const loadAllData = async () => {
     try {
-      console.log("Attempting to fetch all master data...");
-      const [crops, types, endos, structs, refs, specs, obs] = await Promise.all([
+      const [crops, types, endos, structs, refs, specs, obs, seqs] = await Promise.all([
         api.get('/crops/'), api.get('/endophyte-types/'), api.get('/endophytes/'),
         api.get('/structures/'), api.get('/references/'), api.get('/specimens/'),
-        api.get('/observations/')
+        api.get('/observations/'), api.get('/sequencing-methods/')
       ]);
-      
-      console.log("Success! Here are the observations retrieved:", obs);
       
       setMasterData({ 
         crops, endophyteTypes: types, endophytes: endos, 
-        structures: structs, references: refs, specimens: specs, observations: obs 
+        structures: structs, references: refs, specimens: specs, observations: obs,
+        sequencingMethods: Array.isArray(seqs) ? seqs : []
       });
     } catch (error) {
-      console.error("CRITICAL ERROR: The data loading pipeline broke!");
       console.error(error);
       showToast("System error: Failed to fetch data from the database.", "error");
     }
   };
 
-  useEffect(() => { loadAllData(); }, []);
+  useEffect(() => {
+    let ignore = false;
+    async function init() {
+      try {
+        const [crops, types, endos, structs, refs, specs, obs, seqs] = await Promise.all([
+          api.get('/crops/'), api.get('/endophyte-types/'), api.get('/endophytes/'),
+          api.get('/structures/'), api.get('/references/'), api.get('/specimens/'),
+          api.get('/observations/'), api.get('/sequencing-methods/')
+        ]);
+        if (!ignore) {
+          setMasterData({ 
+            crops, endophyteTypes: types, endophytes: endos, 
+            structures: structs, references: refs, specimens: specs, observations: obs,
+            sequencingMethods: Array.isArray(seqs) ? seqs : []
+          });
+        }
+      } catch (err) {
+        if (!ignore) {
+          console.error(err);
+          setToastMsg({ text: "System error: Failed to fetch data from the database.", type: "error" });
+        }
+      }
+    }
+    init();
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
   const renderContent = () => {
     switch(currentView) {
