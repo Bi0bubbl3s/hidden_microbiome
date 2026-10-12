@@ -705,6 +705,254 @@ async function startServer() {
     });
   });
 
+  // --- OBSERVATION & SPECIMEN BATCH IMPORT WITH AUTO MASTER DATA PROVISIONING ---
+  app.post(['/observations/batch-import', '/observations/batch-import/', '/capture-batch', '/capture-batch/'], (req: Request, res: Response) => {
+    const rawRows = Array.isArray(req.body) ? req.body : (req.body.rows || req.body.items || []);
+    if (!Array.isArray(rawRows) || rawRows.length === 0) {
+      return res.status(400).json({ detail: 'No observation rows provided for import.' });
+    }
+
+    const createdCrops: CropSpecies[] = [];
+    const createdStructures: PlantStructure[] = [];
+    const createdTypes: EndophyteType[] = [];
+    const createdEndophytes: Endophyte[] = [];
+    const createdSeqMethods: SequencingMethod[] = [];
+    const createdReferences: Reference[] = [];
+    const createdSpecimens: PlantSpecimen[] = [];
+    const createdObservations: EndophyteObservation[] = [];
+
+    // Helper finders
+    const findCrop = (name: string) => {
+      const trimmed = name.trim().toLowerCase();
+      return crops.find(c => c.common_name.toLowerCase() === trimmed || (c.scientific_name && c.scientific_name.toLowerCase() === trimmed));
+    };
+
+    const findStructure = (name: string) => {
+      const trimmed = name.trim().toLowerCase();
+      return structures.find(s => s.name.toLowerCase() === trimmed);
+    };
+
+    const findType = (name: string) => {
+      const trimmed = name.trim().toLowerCase();
+      return endophyteTypes.find(t => t.type_name.toLowerCase() === trimmed);
+    };
+
+    const findEndo = (name: string) => {
+      const trimmed = name.trim().toLowerCase();
+      return endophytes.find(e => e.scientific_name.toLowerCase() === trimmed);
+    };
+
+    const findSeqMethod = (name: string) => {
+      const trimmed = name.trim().toLowerCase();
+      return sequencingMethods.find(s => s.method_name.toLowerCase() === trimmed);
+    };
+
+    const findRef = (title: string) => {
+      const trimmed = title.trim().toLowerCase();
+      return references.find(r => r.title.toLowerCase() === trimmed);
+    };
+
+    for (let i = 0; i < rawRows.length; i++) {
+      const row = rawRows[i];
+      // 1. CROP IDENTIFICATION / CREATION
+      const cropName = (row.crop_common_name || row.crop_name || row.common_name || row.crop || '').toString().trim();
+      if (!cropName) {
+        continue; // skip empty rows without crop
+      }
+
+      let cropObj = findCrop(cropName);
+      if (!cropObj) {
+        const cropSci = (row.crop_scientific_name || row.scientific_name || '').toString().trim() || null;
+        const cropGroup = (row.plant_group || row.crop_plant_group || row.clade || 'Unknown').toString().trim();
+        cropObj = {
+          crop_species_id: nextCropId++,
+          common_name: cropName,
+          scientific_name: cropSci,
+          plant_group: cropGroup,
+          created_at: new Date().toISOString(),
+        };
+        crops.push(cropObj);
+        createdCrops.push(cropObj);
+      }
+
+      // 2. COORDINATES & SPECIMEN
+      let lat = parseFloat(row.latitude);
+      let lng = parseFloat(row.longitude);
+      if (isNaN(lat)) lat = 0.0;
+      if (isNaN(lng)) lng = 0.0;
+      const isEst = Boolean(row.location_estimated === true || String(row.location_estimated).toLowerCase() === 'true' || String(row.location_estimated) === '1');
+      const obsDate = (row.observation_date || new Date().toISOString().split('T')[0]).toString().trim();
+      const createdBy = (row.created_by || 'Researcher Admin').toString().trim();
+
+      let specIdentifier = (row.specimen_identifier || '').toString().trim();
+      let specimenObj: PlantSpecimen | undefined;
+
+      if (specIdentifier) {
+        specimenObj = specimens.find(s => s.specimen_identifier.toLowerCase() === specIdentifier.toLowerCase());
+      }
+
+      if (!specimenObj) {
+        const cropPrefix = cropObj.common_name.slice(0, 3).toUpperCase().replace(/[^A-Z]/g, 'CRP') || 'CRP';
+        if (!specIdentifier) {
+          specIdentifier = `${cropPrefix}-IMP-${1000 + nextSpecimenId}`;
+        }
+        specimenObj = {
+          plant_specimen_id: nextSpecimenId++,
+          crop_species_id: cropObj.crop_species_id,
+          specimen_identifier: specIdentifier,
+          latitude: lat,
+          longitude: lng,
+          location_estimated: isEst,
+          created_by: createdBy,
+          created_at: new Date().toISOString(),
+        };
+        specimens.push(specimenObj);
+        createdSpecimens.push(specimenObj);
+      }
+
+      // 3. PLANT STRUCTURE(S)
+      const rawStructs = (row.plant_structure || row.structure_name || row.tissue || row.plant_structures || 'Root').toString();
+      // Support multiple structures separated by ; or / or , (unless single word)
+      const structNames = rawStructs.includes(';') 
+        ? rawStructs.split(';').map((s: string) => s.trim()).filter(Boolean)
+        : rawStructs.includes('|')
+        ? rawStructs.split('|').map((s: string) => s.trim()).filter(Boolean)
+        : [rawStructs.trim()];
+
+      const resolvedStructures: PlantStructure[] = [];
+      for (const sName of structNames) {
+        if (!sName) continue;
+        let sObj = findStructure(sName);
+        if (!sObj) {
+          sObj = {
+            plant_structure_id: nextStructureId++,
+            name: sName,
+          };
+          structures.push(sObj);
+          createdStructures.push(sObj);
+        }
+        resolvedStructures.push(sObj);
+      }
+      if (resolvedStructures.length === 0 && structures.length > 0) {
+        resolvedStructures.push(structures[0]);
+      }
+
+      // 4. ENDOPHYTE TYPE & ENDOPHYTE
+      const endoName = (row.endophyte_scientific_name || row.endophyte_name || row.endophyte_species || row.endophyte || '').toString().trim();
+      if (!endoName) continue;
+
+      let endoObj = findEndo(endoName);
+      if (!endoObj) {
+        // Need endophyte type
+        const typeName = (row.endophyte_type || row.taxonomy_type || row.type_name || 'Fungal').toString().trim();
+        let typeObj = findType(typeName);
+        if (!typeObj) {
+          typeObj = {
+            endophyte_type_id: nextTypeId++,
+            type_name: typeName,
+            created_at: new Date().toISOString(),
+          };
+          endophyteTypes.push(typeObj);
+          createdTypes.push(typeObj);
+        }
+
+        endoObj = {
+          endophyte_id: nextEndoId++,
+          endophyte_type_id: typeObj.endophyte_type_id,
+          scientific_name: endoName,
+          created_at: new Date().toISOString(),
+        };
+        endophytes.push(endoObj);
+        createdEndophytes.push(endoObj);
+      }
+
+      // 5. SEQUENCING METHOD
+      const rawSeqMethod = (row.sequencing_method || row.sequencing_technology || row.method_name || '').toString().trim();
+      let seqMethodObj: SequencingMethod | undefined;
+      let seqMethodName: string | null = null;
+      let seqMethodId: number | null = null;
+
+      if (rawSeqMethod) {
+        seqMethodObj = findSeqMethod(rawSeqMethod);
+        if (!seqMethodObj) {
+          const platform = (row.sequencing_platform || row.platform_type || '').toString().trim() || null;
+          seqMethodObj = {
+            sequencing_method_id: nextSeqMethodId++,
+            method_name: rawSeqMethod,
+            platform_type: platform,
+            description: 'Imported via CSV template',
+            created_at: new Date().toISOString(),
+          };
+          sequencingMethods.push(seqMethodObj);
+          createdSeqMethods.push(seqMethodObj);
+        }
+        seqMethodId = seqMethodObj.sequencing_method_id;
+        seqMethodName = seqMethodObj.method_name;
+      }
+
+      // 6. NCBI ACCESSION
+      const rawAccession = (row.ncbi_accession || row.accession || '').toString().trim();
+      const cleanAccession = rawAccession ? rawAccession.toUpperCase() : null;
+
+      // 7. REFERENCE
+      const rawRefTitle = (row.reference_title || row.article_title || row.reference || '').toString().trim();
+      let refObj: Reference | undefined;
+      let refId: number | null = null;
+
+      if (rawRefTitle) {
+        refObj = findRef(rawRefTitle);
+        if (!refObj) {
+          const pubYear = row.publication_year || row.reference_year ? parseInt(row.publication_year || row.reference_year) : null;
+          const refLink = (row.reference_link || row.doi || '').toString().trim() || null;
+          refObj = {
+            reference_id: nextRefId++,
+            title: rawRefTitle,
+            publication_year: isNaN(pubYear as number) ? null : pubYear,
+            reference_link: refLink,
+          };
+          references.push(refObj);
+          createdReferences.push(refObj);
+        }
+        refId = refObj.reference_id;
+      }
+
+      // 8. LOG OBSERVATION(S)
+      for (const sObj of resolvedStructures) {
+        const obs: EndophyteObservation = {
+          observation_id: nextObsId++,
+          plant_specimen_id: specimenObj.plant_specimen_id,
+          endophyte_id: endoObj.endophyte_id,
+          plant_structure_id: sObj.plant_structure_id,
+          reference_id: refId,
+          sequencing_method_id: seqMethodId,
+          sequencing_method: seqMethodName,
+          ncbi_accession: cleanAccession,
+          observation_date: obsDate,
+          created_by: createdBy,
+          created_at: new Date().toISOString(),
+        };
+        observations.push(obs);
+        createdObservations.push(obs);
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      message: `Successfully imported ${createdObservations.length} observation(s) linked to ${createdSpecimens.length} specimen(s)!`,
+      observations_created: createdObservations.length,
+      specimens_created: createdSpecimens.length,
+      auto_created: {
+        crops: createdCrops,
+        structures: createdStructures,
+        endophyte_types: createdTypes,
+        endophytes: createdEndophytes,
+        sequencing_methods: createdSeqMethods,
+        references: createdReferences,
+      }
+    });
+  });
+
+
   // --- HEALTH CHECK ---
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });

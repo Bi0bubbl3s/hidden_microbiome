@@ -1,8 +1,40 @@
 // @ts-nocheck
-import React, { useState } from 'react';
-import { FilePlus, CheckSquare, Search, ExternalLink, Dna } from 'lucide-react';
+import React, { useState, useRef, useMemo } from 'react';
+import { 
+  FilePlus, 
+  CheckSquare, 
+  Search, 
+  ExternalLink, 
+  Dna, 
+  Download, 
+  Upload, 
+  FileSpreadsheet, 
+  X, 
+  AlertCircle, 
+  CheckCircle2, 
+  HelpCircle, 
+  Leaf, 
+  Microscope, 
+  Database, 
+  BookOpen, 
+  Binary, 
+  Sparkles, 
+  RefreshCw,
+  Info,
+  FileText,
+  FileCheck
+} from 'lucide-react';
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
 import api from '../utils/api'; 
+import { parseDataFile, downloadExcelFile, downloadCSVFile } from '../utils/fileImportExport'; 
+
+const OBSERVATION_CSV_TEMPLATE = `crop_common_name,crop_scientific_name,plant_group,latitude,longitude,location_estimated,plant_structure,endophyte_scientific_name,endophyte_type,sequencing_method,sequencing_platform,ncbi_accession,reference_title,publication_year,reference_link,specimen_identifier,observation_date
+Pearl Millet,Pennisetum glaucum,Monocot,-25.7479,28.2293,false,Root,Streptomyces avermitilis,Bacterial,Long-Read (Oxford Nanopore),Oxford Nanopore MinION,PRJNA912834,Microbiome of drought-resilient millets,2024,https://doi.org/10.1016/j.agron.2024.08,PMI-2024-001,2024-04-15
+Chickpea,Cicer arietinum,Dicot,42.0308,-93.6319,false,Nodule; Root,Rhizobium leguminosarum,Bacterial,Sanger Sequencing,Capillary Electrophoresis,OQ542198,Symbiotic endophytes in pulse crop nodules,2023,https://doi.org/10.1007/s00284-023-0192,CHK-2024-002,2024-05-10
+Maize,Zea mays,Monocot,41.6005,-93.6091,false,Leaf,Fusarium oxysporum,Fungal,NGS - Whole Genome Sequencing (WGS),Illumina NovaSeq 6000,SRR21894012,Endophytic fungi in cereal crops: diversity and biocontrol potential,2023,https://doi.org/10.1016/j.funbio.2023.01.002,MAI-2024-003,2024-06-01
+Canola,Brassica napus,Dicot,-33.9249,18.4241,true,Stem,Trichoderma atroviride,Fungal,NGS - Amplicon Metabarcoding,Illumina MiSeq,MK876543,Foliar and vascular fungal endophytes of oilseed rape,2024,https://doi.org/10.1111/mpp.13421,CAN-2024-004,2024-06-20
+Sorghum,Sorghum bicolor,Monocot,40.8136,-96.7026,false,Coleoptile,Bacillus amyloliquefaciens,Bacterial,Sanger Sequencing,Capillary Electrophoresis,CP054321,Plant growth promoting bacilli of grain sorghum,2023,https://doi.org/10.1038/s41598-023-0001,SOR-2024-005,2024-07-04
+`;
 
 const parseCoordinates = (input) => {
   const regex = new RegExp("(\\d+)[°\\s]*(\\d+)?['\\s]*(\\d+(?:\\.\\d+)?)?[\"\\s]*([NSEW])", "gi");
@@ -71,6 +103,15 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
   const [isNewSequencingMethod, setIsNewSequencingMethod] = useState(false);
   const [endoSearch, setEndoSearch] = useState('');
 
+  // CSV Import State
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [csvFile, setCsvFile] = useState(null);
+  const [csvError, setCsvError] = useState(null);
+  const [parsedRows, setParsedRows] = useState([]);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const fileInputRef = useRef(null);
+
   const handleStructureToggle = (structureId) => {
     setFormData((prev) => {
       const currentIds = prev.plant_structure_ids;
@@ -87,6 +128,385 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
         ? { ...prev, endophyte_ids: currentIds.filter(id => id !== endoId) }
         : { ...prev, endophyte_ids: [...currentIds, endoId] };
     });
+  };
+
+  // Download template function in Excel (.xlsx) or CSV format
+  const handleDownloadExcelTemplate = () => {
+    try {
+      // 1. Observation Data Sheet
+      const observationHeaders = [
+        'crop_common_name',
+        'crop_scientific_name',
+        'plant_group',
+        'latitude',
+        'longitude',
+        'location_estimated',
+        'plant_structure',
+        'endophyte_scientific_name',
+        'endophyte_type',
+        'sequencing_method',
+        'sequencing_platform',
+        'ncbi_accession',
+        'reference_title',
+        'publication_year',
+        'reference_link',
+        'specimen_identifier',
+        'observation_date'
+      ];
+
+      const sampleRows = [
+        {
+          crop_common_name: 'Pearl Millet',
+          crop_scientific_name: 'Pennisetum glaucum',
+          plant_group: 'Monocot',
+          latitude: '-25.7479',
+          longitude: '28.2293',
+          location_estimated: 'false',
+          plant_structure: 'Root',
+          endophyte_scientific_name: 'Streptomyces avermitilis',
+          endophyte_type: 'Bacterial',
+          sequencing_method: 'Long-Read (Oxford Nanopore)',
+          sequencing_platform: 'Oxford Nanopore MinION',
+          ncbi_accession: 'PRJNA912834',
+          reference_title: 'Microbiome of drought-resilient millets',
+          publication_year: '2024',
+          reference_link: 'https://doi.org/10.1016/j.agron.2024.08',
+          specimen_identifier: 'PMI-2024-001',
+          observation_date: '2024-04-15'
+        },
+        {
+          crop_common_name: 'Chickpea',
+          crop_scientific_name: 'Cicer arietinum',
+          plant_group: 'Dicot',
+          latitude: '42.0308',
+          longitude: '-93.6319',
+          location_estimated: 'false',
+          plant_structure: 'Nodule; Root',
+          endophyte_scientific_name: 'Rhizobium leguminosarum',
+          endophyte_type: 'Bacterial',
+          sequencing_method: 'Sanger Sequencing',
+          sequencing_platform: 'Capillary Electrophoresis',
+          ncbi_accession: 'OQ542198',
+          reference_title: 'Symbiotic endophytes in pulse crop nodules',
+          publication_year: '2023',
+          reference_link: 'https://doi.org/10.1007/s00284-023-0192',
+          specimen_identifier: 'CHK-2024-002',
+          observation_date: '2024-05-10'
+        },
+        {
+          crop_common_name: 'Maize',
+          crop_scientific_name: 'Zea mays',
+          plant_group: 'Monocot',
+          latitude: '41.6005',
+          longitude: '-93.6091',
+          location_estimated: 'false',
+          plant_structure: 'Leaf',
+          endophyte_scientific_name: 'Fusarium oxysporum',
+          endophyte_type: 'Fungal',
+          sequencing_method: 'NGS - Whole Genome Sequencing (WGS)',
+          sequencing_platform: 'Illumina NovaSeq 6000',
+          ncbi_accession: 'SRR21894012',
+          reference_title: 'Endophytic fungi in cereal crops: diversity and biocontrol potential',
+          publication_year: '2023',
+          reference_link: 'https://doi.org/10.1016/j.funbio.2023.01.002',
+          specimen_identifier: 'MAI-2024-003',
+          observation_date: '2024-06-01'
+        },
+        {
+          crop_common_name: 'Canola',
+          crop_scientific_name: 'Brassica napus',
+          plant_group: 'Dicot',
+          latitude: '-33.9249',
+          longitude: '18.4241',
+          location_estimated: 'true',
+          plant_structure: 'Stem',
+          endophyte_scientific_name: 'Trichoderma atroviride',
+          endophyte_type: 'Fungal',
+          sequencing_method: 'NGS - Amplicon Metabarcoding',
+          sequencing_platform: 'Illumina MiSeq',
+          ncbi_accession: 'MK876543',
+          reference_title: 'Foliar and vascular fungal endophytes of oilseed rape',
+          publication_year: '2024',
+          reference_link: 'https://doi.org/10.1111/mpp.13421',
+          specimen_identifier: 'CAN-2024-004',
+          observation_date: '2024-06-20'
+        },
+        {
+          crop_common_name: 'Sorghum',
+          crop_scientific_name: 'Sorghum bicolor',
+          plant_group: 'Monocot',
+          latitude: '40.8136',
+          longitude: '-96.7026',
+          location_estimated: 'false',
+          plant_structure: 'Coleoptile',
+          endophyte_scientific_name: 'Bacillus amyloliquefaciens',
+          endophyte_type: 'Bacterial',
+          sequencing_method: 'Sanger Sequencing',
+          sequencing_platform: 'Capillary Electrophoresis',
+          ncbi_accession: 'CP054321',
+          reference_title: 'Plant growth promoting bacilli of grain sorghum',
+          publication_year: '2023',
+          reference_link: 'https://doi.org/10.1038/s41598-023-0001',
+          specimen_identifier: 'SOR-2024-005',
+          observation_date: '2024-07-04'
+        }
+      ];
+
+      // 2. Instructions Sheet
+      const instructionsData = [
+        ['Endophyte Observation Import - Field Guidelines & Auto Master Data'],
+        [''],
+        ['Column Header', 'Required / Optional', 'Auto-Created in Master Data if New?', 'Format / Accepted Values', 'Description'],
+        ['crop_common_name', 'Required', 'YES (Auto-added to Crops)', 'Text (e.g. Maize, Pearl Millet)', 'Common name of host plant species'],
+        ['crop_scientific_name', 'Optional', 'YES (Saved to Crop)', 'Text (e.g. Zea mays)', 'Botanical binomial name'],
+        ['plant_group', 'Optional', 'YES', 'Monocot / Dicot / Unknown', 'Taxonomic angiosperm group'],
+        ['latitude', 'Recommended', 'Specimen Coords', 'Decimal (-90.0 to 90.0)', 'Specimen collection latitude'],
+        ['longitude', 'Recommended', 'Specimen Coords', 'Decimal (-180.0 to 180.0)', 'Specimen collection longitude'],
+        ['location_estimated', 'Optional', 'NO', 'true / false', 'Whether GPS coordinates are approximated'],
+        ['plant_structure', 'Optional', 'YES (Auto-added to Tissues)', 'Text (e.g. Root; Stem; Nodule)', 'Plant tissues colonized; separate multiples with semicolon (;)'],
+        ['endophyte_scientific_name', 'Required', 'YES (Auto-added to Endophytes)', 'Text (e.g. Streptomyces avermitilis)', 'Microorganism species scientific name'],
+        ['endophyte_type', 'Optional', 'YES (Auto-added to Types)', 'Bacterial / Fungal / Actinomycete / Viral / Other', 'Classification of endophyte organism'],
+        ['sequencing_method', 'Optional', 'YES (Auto-added to Methods)', 'Text (e.g. Sanger, NGS WGS, Nanopore)', 'Sequencing molecular technique'],
+        ['sequencing_platform', 'Optional', 'YES', 'Text (e.g. Illumina NovaSeq, Oxford Nanopore)', 'Sequencing instrument platform'],
+        ['ncbi_accession', 'Optional', 'Saved with Observation', 'Text (e.g. PRJNA912834, OQ542198)', 'NCBI GenBank / BioProject / SRA accession code'],
+        ['reference_title', 'Optional', 'YES (Auto-added to References)', 'Text', 'Journal article or publication title'],
+        ['publication_year', 'Optional', 'YES', 'Year number (e.g. 2024)', 'Year of scientific literature'],
+        ['reference_link', 'Optional', 'YES', 'URL / DOI (https://doi.org/...)', 'Direct hyperlink or DOI to study'],
+        ['specimen_identifier', 'Optional', 'YES (Used or Auto-generated)', 'Text (e.g. PMI-2024-001)', 'Unique voucher or sample code; left blank to auto-generate'],
+        ['observation_date', 'Optional', 'Observation Record', 'YYYY-MM-DD (e.g. 2024-06-15)', 'Collection or observation date']
+      ];
+
+      // 3. Existing Master Data Reference Sheet for convenient copy-pasting
+      const currentCrops = (masterData.crops || []).map(c => ({
+        Crop_Common_Name: c.common_name,
+        Scientific_Name: c.scientific_name || '',
+        Plant_Group: c.plant_group || ''
+      }));
+
+      const currentEndophytes = (masterData.endophytes || []).map(e => ({
+        Endophyte_Scientific_Name: e.scientific_name,
+        Classification_Type: e.endophyte_types?.type_name || ''
+      }));
+
+      const currentStructures = (masterData.structures || []).map(s => ({
+        Tissue_Structure_Name: s.structure_name
+      }));
+
+      const currentSeqMethods = (masterData.sequencingMethods || []).map(m => ({
+        Sequencing_Method: m.method_name,
+        Platform: m.platform_type || ''
+      }));
+
+      downloadExcelFile({
+        filename: 'observation_import_template.xlsx',
+        sheets: [
+          {
+            name: 'Observations_Template',
+            headers: observationHeaders,
+            rows: sampleRows
+          },
+          {
+            name: 'Column_Guidelines',
+            data2D: instructionsData
+          },
+          {
+            name: 'Existing_Crops',
+            headers: ['Crop_Common_Name', 'Scientific_Name', 'Plant_Group'],
+            rows: currentCrops
+          },
+          {
+            name: 'Existing_Endophytes',
+            headers: ['Endophyte_Scientific_Name', 'Classification_Type'],
+            rows: currentEndophytes
+          },
+          {
+            name: 'Existing_Tissues',
+            headers: ['Tissue_Structure_Name'],
+            rows: currentStructures
+          },
+          {
+            name: 'Existing_Seq_Methods',
+            headers: ['Sequencing_Method', 'Platform'],
+            rows: currentSeqMethods
+          }
+        ]
+      });
+
+      notify('Excel (.xlsx) observation template with guidelines downloaded!', 'success');
+    } catch (err) {
+      console.error('Error generating Excel template:', err);
+      notify('Failed to generate Excel template. Downloading CSV instead.', 'warning');
+      handleDownloadCSVTemplate();
+    }
+  };
+
+  const handleDownloadCSVTemplate = () => {
+    try {
+      downloadCSVFile({
+        filename: 'observation_import_template.csv',
+        content: OBSERVATION_CSV_TEMPLATE
+      });
+      notify('Observation CSV template downloaded successfully!', 'success');
+    } catch {
+      notify('Failed to generate CSV template.', 'error');
+    }
+  };
+
+  // Universal File Selection & Parsing (.xlsx, .xls, .csv, .tsv, .txt)
+  const handleFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCsvFile(file);
+    setCsvError(null);
+    setImportResult(null);
+
+    try {
+      const { rows } = await parseDataFile(file);
+      if (!rows || rows.length === 0) {
+        setCsvError('The selected file does not contain any valid observation data rows.');
+        setParsedRows([]);
+        return;
+      }
+
+      // Validate basic headers: must have at least crop and endophyte identifier
+      const first = rows[0];
+      const hasCrop = 'crop_common_name' in first || 'crop_name' in first || 'common_name' in first || 'crop' in first;
+      const hasEndo = 'endophyte_scientific_name' in first || 'endophyte_name' in first || 'scientific_name' in first || 'endophyte' in first;
+
+      if (!hasCrop || !hasEndo) {
+        setCsvError('File requires columns for host crop (e.g. crop_common_name) and endophyte species (e.g. endophyte_scientific_name). Check the template guidelines.');
+      }
+
+      setParsedRows(rows);
+    } catch (err) {
+      console.error('Error parsing data file:', err);
+      setCsvError(err.message || 'Error parsing file. Please check that it is a valid Excel, CSV, or Text table.');
+      setParsedRows([]);
+    }
+  };
+
+  // Detect which entities in the parsed CSV are brand new (not pre-existing in masterData)
+  const masterDataAnalysis = useMemo(() => {
+    if (!parsedRows || parsedRows.length === 0) {
+      return {
+        newCrops: [],
+        newEndophytes: [],
+        newTypes: [],
+        newStructures: [],
+        newSeqMethods: [],
+        newReferences: [],
+        invalidCoordsCount: 0
+      };
+    }
+
+    const existingCropNames = new Set((masterData.crops || []).map(c => c.common_name.toLowerCase().trim()));
+    const existingEndoNames = new Set((masterData.endophytes || []).map(e => e.scientific_name.toLowerCase().trim()));
+    const existingTypeNames = new Set((masterData.endophyteTypes || []).map(t => t.type_name.toLowerCase().trim()));
+    const existingStructNames = new Set((masterData.structures || []).map(s => s.name.toLowerCase().trim()));
+    const existingSeqNames = new Set((masterData.sequencingMethods || []).map(s => s.method_name.toLowerCase().trim()));
+    const existingRefTitles = new Set((masterData.references || []).map(r => r.title.toLowerCase().trim()));
+
+    const newCrops = new Set();
+    const newEndophytes = new Set();
+    const newTypes = new Set();
+    const newStructures = new Set();
+    const newSeqMethods = new Set();
+    const newReferences = new Set();
+    let invalidCoordsCount = 0;
+
+    for (const r of parsedRows) {
+      const crop = (r.crop_common_name || r.crop_name || r.common_name || r.crop || '').trim();
+      if (crop && !existingCropNames.has(crop.toLowerCase())) {
+        newCrops.add(crop);
+      }
+
+      const endo = (r.endophyte_scientific_name || r.endophyte_name || r.endophyte_species || r.endophyte || '').trim();
+      if (endo && !existingEndoNames.has(endo.toLowerCase())) {
+        newEndophytes.add(endo);
+      }
+
+      const type = (r.endophyte_type || r.taxonomy_type || r.type_name || '').trim();
+      if (type && !existingTypeNames.has(type.toLowerCase())) {
+        newTypes.add(type);
+      }
+
+      const rawStruct = (r.plant_structure || r.structure_name || r.tissue || '').trim();
+      if (rawStruct) {
+        const parts = rawStruct.includes(';') ? rawStruct.split(';') : rawStruct.includes('|') ? rawStruct.split('|') : [rawStruct];
+        for (const p of parts) {
+          const sName = p.trim();
+          if (sName && !existingStructNames.has(sName.toLowerCase())) {
+            newStructures.add(sName);
+          }
+        }
+      }
+
+      const seq = (r.sequencing_method || r.sequencing_technology || r.method_name || '').trim();
+      if (seq && !existingSeqNames.has(seq.toLowerCase())) {
+        newSeqMethods.add(seq);
+      }
+
+      const ref = (r.reference_title || r.article_title || r.reference || '').trim();
+      if (ref && !existingRefTitles.has(ref.toLowerCase())) {
+        newReferences.add(ref);
+      }
+
+      const lat = parseFloat(r.latitude);
+      const lng = parseFloat(r.longitude);
+      if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        invalidCoordsCount++;
+      }
+    }
+
+    return {
+      newCrops: Array.from(newCrops),
+      newEndophytes: Array.from(newEndophytes),
+      newTypes: Array.from(newTypes),
+      newStructures: Array.from(newStructures),
+      newSeqMethods: Array.from(newSeqMethods),
+      newReferences: Array.from(newReferences),
+      invalidCoordsCount
+    };
+  }, [parsedRows, masterData]);
+
+  // Execute CSV batch import
+  const handleExecuteImport = async () => {
+    if (!parsedRows || parsedRows.length === 0) {
+      return notify('Please select a valid CSV file first.', 'error');
+    }
+
+    setIsImporting(true);
+    try {
+      const res = await api.post('/observations/batch-import/', { rows: parsedRows });
+      setImportResult(res);
+      
+      const newItemsSummary = [];
+      if (res.auto_created?.crops?.length) newItemsSummary.push(`${res.auto_created.crops.length} crop(s)`);
+      if (res.auto_created?.endophytes?.length) newItemsSummary.push(`${res.auto_created.endophytes.length} endophyte(s)`);
+      if (res.auto_created?.structures?.length) newItemsSummary.push(`${res.auto_created.structures.length} plant structure(s)`);
+      if (res.auto_created?.sequencing_methods?.length) newItemsSummary.push(`${res.auto_created.sequencing_methods.length} sequencing method(s)`);
+      if (res.auto_created?.references?.length) newItemsSummary.push(`${res.auto_created.references.length} reference(s)`);
+
+      const extraText = newItemsSummary.length > 0 
+        ? ` Auto-provisioned into Master Data: ${newItemsSummary.join(', ')}.`
+        : '';
+
+      notify(`Successfully imported ${res.observations_created} observation(s)!${extraText}`, 'success');
+      await refreshData();
+      
+      // Auto close after brief pause or user can inspect results
+      setTimeout(() => {
+        setIsImportModalOpen(false);
+        setCsvFile(null);
+        setParsedRows([]);
+        setImportResult(null);
+      }, 1400);
+
+    } catch (err) {
+      notify(err.message || 'Failed to import CSV observations', 'error');
+    } finally {
+      setIsImporting(false);
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -200,13 +620,496 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
   ) || [];
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
-      <header className="mb-8">
-        <h2 className="text-2xl font-bold text-slate-800">Capture Observation</h2>
-        <p className="text-slate-500">Record endophyte observations linked to a plant specimen.</p>
+    <div className="max-w-4xl mx-auto space-y-6 pb-12">
+      {/* Top Header with CSV Quick Actions */}
+      <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-slate-200">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-800">Log Observation</h2>
+          <p className="text-slate-500 text-sm mt-0.5">
+            Capture endophyte occurrences, tissue localization, and molecular evidence.
+          </p>
+        </div>
+
+        {/* Action Toolbar */}
+        <div className="flex items-center gap-2.5 flex-wrap">
+          {/* Download Options */}
+          <div className="flex items-center rounded-lg border border-slate-300 bg-white shadow-xs overflow-hidden">
+            <button
+              type="button"
+              onClick={handleDownloadExcelTemplate}
+              className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 transition-colors cursor-pointer"
+              title="Download rich Excel workbook (.xlsx) with guidelines, data validation tabs, and master data references"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+              <span>Download Excel Template (.xlsx)</span>
+            </button>
+            <div className="h-5 w-px bg-slate-200"></div>
+            <button
+              type="button"
+              onClick={handleDownloadCSVTemplate}
+              className="inline-flex items-center gap-1.5 px-2.5 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors cursor-pointer"
+              title="Download standard CSV template (.csv)"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>CSV</span>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setIsImportModalOpen(true);
+              setCsvError(null);
+            }}
+            className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs transition-all cursor-pointer"
+            title="Import observations from Excel (.xlsx/.xls), CSV, or text file (.txt/.tsv) with automatic master data provisioning"
+          >
+            <Upload className="w-4 h-4" />
+            <span>Import Data File</span>
+          </button>
+        </div>
       </header>
 
-      <form onSubmit={handleSubmit} className="bg-white p-8 rounded-xl shadow-sm border border-slate-200 space-y-6">
+      {/* Import Modal */}
+      {isImportModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
+            
+            {/* Modal Header */}
+            <div className="p-5 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-emerald-100 text-emerald-700 rounded-xl">
+                  <FileSpreadsheet className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-800">Import Observations (Excel / CSV / Text)</h3>
+                  <p className="text-xs text-slate-500">
+                    Upload observation records from Excel (.xlsx/.xls), CSV (.csv), or delimited text files (.tsv/.txt). Novel items are auto-provisioned to Master Data.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsImportModalOpen(false);
+                  setCsvFile(null);
+                  setParsedRows([]);
+                  setCsvError(null);
+                  setImportResult(null);
+                }}
+                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto space-y-5 flex-1">
+              
+              {/* Informative Guidance Banner */}
+              <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-4 text-xs text-emerald-950 flex items-start gap-3">
+                <Sparkles className="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <div className="font-semibold text-emerald-900">
+                    Smart Master Data Synchronization & Multi-Format Support
+                  </div>
+                  <p className="text-emerald-800 leading-relaxed">
+                    You can download an <strong>Excel workbook (.xlsx)</strong> with instructions and existing reference tables, edit it in Microsoft Excel, Google Sheets, or LibreOffice, and upload it directly as <strong>.xlsx, .csv, or .txt</strong>. Any new crops, endophytes, structures, or sequencing platforms are automatically created in Master Data!
+                  </p>
+                  <div className="pt-2 flex items-center gap-3 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={handleDownloadExcelTemplate}
+                      className="inline-flex items-center gap-1.5 font-bold text-emerald-800 bg-emerald-100/70 px-2.5 py-1 rounded-md hover:bg-emerald-200 transition-colors cursor-pointer"
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
+                      Download Excel Template (.xlsx)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDownloadCSVTemplate}
+                      className="inline-flex items-center gap-1.5 font-semibold text-slate-700 bg-white border border-slate-300 px-2.5 py-1 rounded-md hover:bg-slate-100 transition-colors cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5 text-slate-500" />
+                      Download CSV Template (.csv)
+                    </button>
+                    <span className="text-slate-400 text-[11px]">Accepts .xlsx, .xls, .csv, .txt, .tsv</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Upload Drop Area */}
+              <div 
+                onClick={() => fileInputRef.current?.click()}
+                className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all ${
+                  csvFile 
+                    ? 'border-emerald-500 bg-emerald-50/40' 
+                    : 'border-slate-300 hover:border-emerald-500 hover:bg-slate-50'
+                }`}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xlsx,.xls,.csv,.txt,.tsv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+
+                <div className="flex flex-col items-center justify-center space-y-2">
+                  <div className="p-3 bg-slate-100 rounded-full text-slate-600 group-hover:scale-105 transition-transform">
+                    {csvFile?.name?.endsWith('.xlsx') || csvFile?.name?.endsWith('.xls') ? (
+                      <FileSpreadsheet className="w-6 h-6 text-emerald-600" />
+                    ) : csvFile?.name?.endsWith('.txt') ? (
+                      <FileText className="w-6 h-6 text-blue-600" />
+                    ) : (
+                      <Upload className="w-6 h-6 text-emerald-600" />
+                    )}
+                  </div>
+                  <div className="text-sm font-semibold text-slate-700">
+                    {csvFile ? csvFile.name : 'Click to select or drag and drop your Excel, CSV, or Text file'}
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    {csvFile 
+                      ? `${(csvFile.size / 1024).toFixed(1)} KB • ${parsedRows.length} record(s) ready` 
+                      : 'Supports Excel (.xlsx, .xls), CSV (.csv), and Tab/Comma-delimited text (.txt, .tsv)'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Error Alert */}
+              {csvError && (
+                <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  <span>{csvError}</span>
+                </div>
+              )}
+
+              {/* Success Result Alert */}
+              {importResult && (
+                <div className="p-4 bg-emerald-50 border border-emerald-300 rounded-xl text-emerald-900 text-xs flex items-center gap-3">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 flex-shrink-0" />
+                  <div>
+                    <div className="font-bold text-emerald-900">{importResult.message}</div>
+                    <div className="text-emerald-700 mt-0.5">
+                      Updated database state. Closing dialog...
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Master Data Discovery & Preview when rows exist */}
+              {parsedRows.length > 0 && !importResult && (
+                <div className="space-y-4 pt-2">
+                  
+                  {/* Summary Bar of Detected Entities */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-xs font-bold text-slate-800 uppercase tracking-wider">
+                        <Database className="w-4 h-4 text-emerald-600" />
+                        <span>Pre-Import Validation & Discovery</span>
+                      </div>
+                      <span className="text-xs font-semibold px-2 py-0.5 bg-slate-200 text-slate-700 rounded-md">
+                        {parsedRows.length} Observation Row(s)
+                      </span>
+                    </div>
+
+                    {/* Chips for New Master Data Items */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 text-xs">
+                      
+                      {/* Crops */}
+                      <div className="p-2.5 rounded-lg border border-slate-200 bg-white">
+                        <div className="flex items-center justify-between text-slate-500 mb-1">
+                          <span className="flex items-center gap-1.5 font-medium">
+                            <Leaf className="w-3.5 h-3.5 text-emerald-600" />
+                            Crops
+                          </span>
+                          {masterDataAnalysis.newCrops.length > 0 ? (
+                            <span className="bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.2 rounded text-[11px]">
+                              +{masterDataAnalysis.newCrops.length} New
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 text-[11px]">All existing</span>
+                          )}
+                        </div>
+                        {masterDataAnalysis.newCrops.length > 0 && (
+                          <div className="text-[11px] text-emerald-700 font-medium truncate" title={masterDataAnalysis.newCrops.join(', ')}>
+                            {masterDataAnalysis.newCrops.join(', ')}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Endophytes */}
+                      <div className="p-2.5 rounded-lg border border-slate-200 bg-white">
+                        <div className="flex items-center justify-between text-slate-500 mb-1">
+                          <span className="flex items-center gap-1.5 font-medium">
+                            <Dna className="w-3.5 h-3.5 text-purple-600" />
+                            Endophytes
+                          </span>
+                          {masterDataAnalysis.newEndophytes.length > 0 ? (
+                            <span className="bg-purple-100 text-purple-800 font-bold px-1.5 py-0.2 rounded text-[11px]">
+                              +{masterDataAnalysis.newEndophytes.length} New
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 text-[11px]">All existing</span>
+                          )}
+                        </div>
+                        {masterDataAnalysis.newEndophytes.length > 0 && (
+                          <div className="text-[11px] text-purple-700 font-medium truncate" title={masterDataAnalysis.newEndophytes.join(', ')}>
+                            {masterDataAnalysis.newEndophytes.join(', ')}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Structures */}
+                      <div className="p-2.5 rounded-lg border border-slate-200 bg-white">
+                        <div className="flex items-center justify-between text-slate-500 mb-1">
+                          <span className="flex items-center gap-1.5 font-medium">
+                            <Database className="w-3.5 h-3.5 text-blue-600" />
+                            Plant Tissues
+                          </span>
+                          {masterDataAnalysis.newStructures.length > 0 ? (
+                            <span className="bg-blue-100 text-blue-800 font-bold px-1.5 py-0.2 rounded text-[11px]">
+                              +{masterDataAnalysis.newStructures.length} New
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 text-[11px]">All existing</span>
+                          )}
+                        </div>
+                        {masterDataAnalysis.newStructures.length > 0 && (
+                          <div className="text-[11px] text-blue-700 font-medium truncate" title={masterDataAnalysis.newStructures.join(', ')}>
+                            {masterDataAnalysis.newStructures.join(', ')}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Sequencing Methods */}
+                      <div className="p-2.5 rounded-lg border border-slate-200 bg-white">
+                        <div className="flex items-center justify-between text-slate-500 mb-1">
+                          <span className="flex items-center gap-1.5 font-medium">
+                            <Binary className="w-3.5 h-3.5 text-indigo-600" />
+                            Sequencing
+                          </span>
+                          {masterDataAnalysis.newSeqMethods.length > 0 ? (
+                            <span className="bg-indigo-100 text-indigo-800 font-bold px-1.5 py-0.2 rounded text-[11px]">
+                              +{masterDataAnalysis.newSeqMethods.length} New
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 text-[11px]">All existing</span>
+                          )}
+                        </div>
+                        {masterDataAnalysis.newSeqMethods.length > 0 && (
+                          <div className="text-[11px] text-indigo-700 font-medium truncate" title={masterDataAnalysis.newSeqMethods.join(', ')}>
+                            {masterDataAnalysis.newSeqMethods.join(', ')}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* References */}
+                      <div className="p-2.5 rounded-lg border border-slate-200 bg-white">
+                        <div className="flex items-center justify-between text-slate-500 mb-1">
+                          <span className="flex items-center gap-1.5 font-medium">
+                            <BookOpen className="w-3.5 h-3.5 text-amber-600" />
+                            References
+                          </span>
+                          {masterDataAnalysis.newReferences.length > 0 ? (
+                            <span className="bg-amber-100 text-amber-800 font-bold px-1.5 py-0.2 rounded text-[11px]">
+                              +{masterDataAnalysis.newReferences.length} New
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 text-[11px]">All existing</span>
+                          )}
+                        </div>
+                        {masterDataAnalysis.newReferences.length > 0 && (
+                          <div className="text-[11px] text-amber-700 font-medium truncate" title={masterDataAnalysis.newReferences.join(', ')}>
+                            {masterDataAnalysis.newReferences.join(', ')}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Coordinates Validation */}
+                      <div className="p-2.5 rounded-lg border border-slate-200 bg-white">
+                        <div className="flex items-center justify-between text-slate-500 mb-1">
+                          <span className="font-medium">Georeferencing</span>
+                          {masterDataAnalysis.invalidCoordsCount > 0 ? (
+                            <span className="bg-amber-100 text-amber-800 font-bold px-1.5 py-0.2 rounded text-[11px]">
+                              {masterDataAnalysis.invalidCoordsCount} Missing/0,0
+                            </span>
+                          ) : (
+                            <span className="text-emerald-600 font-semibold text-[11px]">100% Valid</span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {masterDataAnalysis.invalidCoordsCount > 0 
+                            ? 'Will default coordinates to (0,0)' 
+                            : 'All coordinates within range'}
+                        </div>
+                      </div>
+
+                    </div>
+                  </div>
+
+                  {/* Table Preview */}
+                  <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
+                    <div className="p-3 bg-slate-100 border-b border-slate-200 flex items-center justify-between text-xs font-semibold text-slate-700">
+                      <span>Records Preview (showing up to 10 rows)</span>
+                      <span className="text-slate-500">Green badges indicate entities auto-created into Master Data</span>
+                    </div>
+
+                    <div className="overflow-x-auto max-h-64">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-medium">
+                          <tr>
+                            <th className="py-2 px-3">#</th>
+                            <th className="py-2 px-3">Host Crop</th>
+                            <th className="py-2 px-3">Coords (Lat, Lng)</th>
+                            <th className="py-2 px-3">Structure</th>
+                            <th className="py-2 px-3">Endophyte Species</th>
+                            <th className="py-2 px-3">Sequencing & Accession</th>
+                            <th className="py-2 px-3">Reference</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {parsedRows.slice(0, 10).map((row, idx) => {
+                            const cropName = row.crop_common_name || row.crop_name || row.common_name || row.crop || '-';
+                            const isNewCrop = masterDataAnalysis.newCrops.includes(cropName);
+
+                            const endoName = row.endophyte_scientific_name || row.endophyte_name || row.endophyte_species || row.endophyte || '-';
+                            const isNewEndo = masterDataAnalysis.newEndophytes.includes(endoName);
+
+                            const rawStruct = row.plant_structure || row.structure_name || row.tissue || '-';
+                            const seqMethod = row.sequencing_method || row.sequencing_technology || row.method_name || '';
+                            const isNewSeq = seqMethod && masterDataAnalysis.newSeqMethods.includes(seqMethod);
+
+                            const accession = row.ncbi_accession || row.accession || '';
+                            const refTitle = row.reference_title || row.article_title || row.reference || '';
+
+                            return (
+                              <tr key={idx} className="hover:bg-slate-50">
+                                <td className="py-2 px-3 text-slate-400 font-mono text-[11px]">{idx + 1}</td>
+                                
+                                <td className="py-2 px-3 font-medium text-slate-800">
+                                  <div className="flex items-center gap-1.5">
+                                    <span>{cropName}</span>
+                                    {isNewCrop && (
+                                      <span className="text-[10px] font-bold px-1.5 py-0.2 bg-emerald-100 text-emerald-800 rounded">
+                                        NEW CROP
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+
+                                <td className="py-2 px-3 text-slate-600 font-mono text-[11px]">
+                                  {row.latitude && row.longitude 
+                                    ? `${parseFloat(row.latitude).toFixed(4)}, ${parseFloat(row.longitude).toFixed(4)}` 
+                                    : <span className="text-amber-500 italic">Not specified</span>}
+                                </td>
+
+                                <td className="py-2 px-3 text-slate-700">
+                                  {rawStruct}
+                                </td>
+
+                                <td className="py-2 px-3 italic text-slate-800">
+                                  <div className="flex items-center gap-1.5">
+                                    <span>{endoName}</span>
+                                    {isNewEndo && (
+                                      <span className="text-[10px] font-bold px-1.5 py-0.2 bg-purple-100 text-purple-800 rounded not-italic">
+                                        NEW SPECIES
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+
+                                <td className="py-2 px-3">
+                                  <div className="space-y-0.5">
+                                    {seqMethod ? (
+                                      <div className="flex items-center gap-1">
+                                        <span className="text-slate-700">{seqMethod}</span>
+                                        {isNewSeq && (
+                                          <span className="text-[9px] font-bold px-1 bg-indigo-100 text-indigo-800 rounded">NEW</span>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <span className="text-slate-400 text-[11px]">—</span>
+                                    )}
+                                    {accession && (
+                                      <div className="font-mono text-[11px] text-emerald-700 font-semibold">
+                                        {accession}
+                                      </div>
+                                    )}
+                                  </div>
+                                </td>
+
+                                <td className="py-2 px-3 text-slate-600 max-w-[160px] truncate" title={refTitle}>
+                                  {refTitle || <span className="text-slate-400 text-[11px]">—</span>}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                </div>
+              )}
+
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
+              <div className="text-xs text-slate-500">
+                {parsedRows.length > 0 && (
+                  <span>Ready to import <strong>{parsedRows.length}</strong> observation record(s)</span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsImportModalOpen(false);
+                    setCsvFile(null);
+                    setParsedRows([]);
+                    setCsvError(null);
+                    setImportResult(null);
+                  }}
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="button"
+                  disabled={parsedRows.length === 0 || isImporting || !!importResult}
+                  onClick={handleExecuteImport}
+                  className={`inline-flex items-center gap-2 px-5 py-2 text-xs font-semibold text-white rounded-lg transition-all cursor-pointer ${
+                    parsedRows.length === 0 || isImporting || !!importResult
+                      ? 'bg-slate-400 cursor-not-allowed opacity-70'
+                      : 'bg-emerald-600 hover:bg-emerald-700 shadow-sm'
+                  }`}
+                >
+                  {isImporting ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Importing & Provisioning Master Data...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-4 h-4" />
+                      <span>Import {parsedRows.length > 0 ? `${parsedRows.length} Observations` : 'CSV'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* Manual Observation Entry Form */}
+      <form onSubmit={handleSubmit} className="bg-white p-8 rounded-xl shadow-xs border border-slate-200 space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           
           <div className="space-y-2">
@@ -215,7 +1118,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
                <button 
                  type="button" 
                  onClick={() => setIsNewCrop(!isNewCrop)} 
-                 className="text-sm font-medium text-emerald-600 hover:text-emerald-700 hover:underline"
+                 className="text-sm font-medium text-emerald-600 hover:text-emerald-700 hover:underline cursor-pointer"
                >
                  {isNewCrop ? "- Select Existing" : "+ Add New Crop"}
                </button>
@@ -309,7 +1212,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
                   type="number" step="any" required placeholder="-33.9248"
                   value={formData.latitude}
                   onChange={(e) => setFormData({...formData, latitude: e.target.value})}
-                  className="w-full rounded border-slate-300 border p-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className="w-full rounded border-slate-300 border p-2 focus:ring-emerald-500 focus:border-emerald-500 bg-white"
                 />
               </div>
               <div>
@@ -318,7 +1221,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
                   type="number" step="any" required placeholder="18.4240"
                   value={formData.longitude}
                   onChange={(e) => setFormData({...formData, longitude: e.target.value})}
-                  className="w-full rounded border-slate-300 border p-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  className="w-full rounded border-slate-300 border p-2 focus:ring-emerald-500 focus:border-emerald-500 bg-white"
                 />
               </div>
             </div>
@@ -350,7 +1253,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
             </div>
           </div>
           
-          {/* NEW: Multi-select Endophytes UI */}
+          {/* Multi-select Endophytes UI */}
           <div className="space-y-3 bg-slate-50 p-4 rounded-lg border border-slate-200">
             <div className="flex justify-between items-center mb-1">
                <label className="block text-sm font-medium text-slate-700">Select Endophytes (Multiple) *</label>
@@ -361,7 +1264,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
               <input 
                 type="text" placeholder="Search unlisted endophytes..." 
                 value={endoSearch} onChange={(e) => setEndoSearch(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-300 text-sm focus:ring-emerald-500 focus:border-emerald-500"
+                className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-300 text-sm focus:ring-emerald-500 focus:border-emerald-500 bg-white"
               />
             </div>
 
@@ -385,7 +1288,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
             <div className="pt-2 border-t border-slate-200">
                <button 
                  type="button" onClick={() => setIsNewEndophyte(!isNewEndophyte)} 
-                 className="text-sm font-medium text-emerald-600 hover:text-emerald-700"
+                 className="text-sm font-medium text-emerald-600 hover:text-emerald-700 cursor-pointer"
                >
                  {isNewEndophyte ? "- Cancel Adding New" : "+ Add a New Unlisted Endophyte"}
                </button>
@@ -429,7 +1332,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
                   key={s.plant_structure_id} 
                   className={`flex items-center p-3 rounded-lg border cursor-pointer transition-colors ${
                     formData.plant_structure_ids.includes(s.plant_structure_id.toString()) 
-                    ? 'bg-emerald-50 border-emerald-500 shadow-sm' 
+                    ? 'bg-emerald-50 border-emerald-500 shadow-xs' 
                     : 'bg-white border-slate-300 hover:bg-slate-100'
                   }`}
                 >
@@ -458,7 +1361,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
             />
           </div>
 
-          {/* NEW: Genomic & Sequencing Data Section */}
+          {/* Genomic & Sequencing Data Section */}
           <div className="space-y-4 md:col-span-2 bg-slate-50 p-5 rounded-xl border border-slate-200">
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
               <div className="flex items-center space-x-2">
@@ -476,7 +1379,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
                   <button 
                     type="button" 
                     onClick={() => setIsNewSequencingMethod(!isNewSequencingMethod)} 
-                    className="text-xs font-medium text-emerald-600 hover:text-emerald-700 hover:underline"
+                    className="text-xs font-medium text-emerald-600 hover:text-emerald-700 hover:underline cursor-pointer"
                   >
                     {isNewSequencingMethod ? "Select Existing" : "+ Add New Method"}
                   </button>
@@ -563,7 +1466,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
                <button 
                  type="button" 
                  onClick={() => setIsNewReference(!isNewReference)} 
-                 className="text-sm font-medium text-emerald-600 hover:text-emerald-700 hover:underline"
+                 className="text-sm font-medium text-emerald-600 hover:text-emerald-700 hover:underline cursor-pointer"
                >
                  {isNewReference ? "Select Existing Reference" : "+ Add New Reference"}
                </button>
@@ -620,7 +1523,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
         </div>
 
         <div className="pt-4 border-t border-slate-100 flex justify-end">
-          <button type="submit" className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2 px-6 rounded-lg transition-colors flex items-center">
+          <button type="submit" className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2 px-6 rounded-lg transition-colors flex items-center cursor-pointer">
             <FilePlus className="w-5 h-5 mr-2" />
             Save Observation
           </button>

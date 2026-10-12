@@ -18,6 +18,7 @@ import {
   Binary
 } from 'lucide-react';
 import api from '../utils/api'; 
+import { parseDataFile, downloadExcelFile, downloadCSVFile } from '../utils/fileImportExport'; 
 
 const TAB_CONFIG = {
   crops: {
@@ -88,67 +89,6 @@ const TAB_CONFIG = {
   }
 };
 
-// Robust CSV parser handling commas inside quotes, CRLF, and spaces
-const parseCSV = (text) => {
-  const clean = text.replace(/^\uFEFF/, '').trim();
-  if (!clean) return { headers: [], rows: [] };
-  
-  const lines = [];
-  let currentField = '';
-  let inQuotes = false;
-  let currentLine = [];
-  
-  for (let i = 0; i < clean.length; i++) {
-    const char = clean[i];
-    const nextChar = clean[i + 1];
-    
-    if (char === '"') {
-      if (inQuotes && nextChar === '"') {
-        currentField += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === ',' && !inQuotes) {
-      currentLine.push(currentField.trim());
-      currentField = '';
-    } else if ((char === '\r' || char === '\n') && !inQuotes) {
-      if (char === '\r' && nextChar === '\n') i++;
-      currentLine.push(currentField.trim());
-      currentField = '';
-      if (currentLine.some(c => c !== '')) {
-        lines.push(currentLine);
-      }
-      currentLine = [];
-    } else {
-      currentField += char;
-    }
-  }
-  if (currentField.length > 0 || currentLine.length > 0) {
-    currentLine.push(currentField.trim());
-    if (currentLine.some(c => c !== '')) {
-      lines.push(currentLine);
-    }
-  }
-
-  if (lines.length === 0) return { headers: [], rows: [] };
-  
-  const rawHeaders = lines[0];
-  const headers = rawHeaders.map(h => 
-    h.toLowerCase().trim().replace(/[\s_-]+/g, '_')
-  );
-
-  const rows = lines.slice(1).map(line => {
-    const obj = {};
-    headers.forEach((h, idx) => {
-      obj[h] = line[idx] !== undefined ? line[idx].trim() : '';
-    });
-    return obj;
-  });
-  
-  return { headers, rows };
-};
-
 const MasterDataScreen = ({ masterData, notify, refreshData }) => {
   const [activeTab, setActiveTab] = useState('crops');
   
@@ -170,20 +110,103 @@ const MasterDataScreen = ({ masterData, notify, refreshData }) => {
 
   const currentTabConfig = TAB_CONFIG[activeTab];
 
-  // Helper to trigger CSV Template Download
-  const handleDownloadTemplate = (tabKey = activeTab) => {
+  // Helper to trigger Excel Template Download (.xlsx)
+  const handleDownloadExcelTemplate = (tabKey = activeTab) => {
+    try {
+      const config = TAB_CONFIG[tabKey] || TAB_CONFIG.crops;
+      // Parse sample template rows
+      const lines = config.templateContent.trim().split('\n');
+      const headers = lines[0].split(',');
+      const sampleRows = lines.slice(1).map(l => {
+        const parts = l.split(',');
+        const obj = {};
+        headers.forEach((h, idx) => {
+          obj[h] = parts[idx] || '';
+        });
+        return obj;
+      });
+
+      // Existing records in current category to assist user
+      let currentRecords = [];
+      if (tabKey === 'crops') {
+        currentRecords = (masterData.crops || []).map(c => ({
+          common_name: c.common_name,
+          scientific_name: c.scientific_name || '',
+          plant_group: c.plant_group || ''
+        }));
+      } else if (tabKey === 'types') {
+        currentRecords = (masterData.endophyteTypes || []).map(t => ({
+          type_name: t.type_name
+        }));
+      } else if (tabKey === 'endophytes') {
+        currentRecords = (masterData.endophytes || []).map(e => ({
+          scientific_name: e.scientific_name,
+          type_name: e.endophyte_types?.type_name || ''
+        }));
+      } else if (tabKey === 'structures') {
+        currentRecords = (masterData.structures || []).map(s => ({
+          name: s.name
+        }));
+      } else if (tabKey === 'references') {
+        currentRecords = (masterData.references || []).map(r => ({
+          title: r.title,
+          publication_year: r.publication_year || '',
+          reference_link: r.reference_link || ''
+        }));
+      } else if (tabKey === 'sequencing') {
+        currentRecords = (masterData.sequencingMethods || []).map(s => ({
+          method_name: s.method_name,
+          platform_type: s.platform_type || '',
+          description: s.description || ''
+        }));
+      }
+
+      downloadExcelFile({
+        filename: config.filename.replace('.csv', '.xlsx'),
+        sheets: [
+          {
+            name: `${config.label}_Template`,
+            headers: config.headers,
+            rows: sampleRows
+          },
+          {
+            name: 'Instructions',
+            data2D: [
+              [`Master Data Template: ${config.label}`],
+              [''],
+              ['Required Column:', config.requiredCol],
+              ['Accepted Columns:', config.headers.join(', ')],
+              ['Guidelines:', config.description],
+              [''],
+              ['Tips:', 'You can edit this file in Microsoft Excel, Google Sheets, or Numbers and upload it back as .xlsx, .csv, or .txt!']
+            ]
+          },
+          {
+            name: 'Current_Database_Records',
+            headers: config.headers,
+            rows: currentRecords
+          }
+        ]
+      });
+      notify(`Downloaded Excel template for ${config.label}`, 'success');
+    } catch (err) {
+      console.error('Error generating Excel template:', err);
+      handleDownloadCSVTemplate(tabKey);
+    }
+  };
+
+  // Helper to trigger CSV Template Download (.csv)
+  const handleDownloadCSVTemplate = (tabKey = activeTab) => {
     const config = TAB_CONFIG[tabKey] || TAB_CONFIG.crops;
-    const blob = new Blob([config.templateContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', config.filename);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    downloadCSVFile({
+      filename: config.filename,
+      content: config.templateContent
+    });
     notify(`Downloaded CSV template for ${config.label}`, 'success');
   };
+
+  // Legacy fallback alias
+  const handleDownloadTemplate = handleDownloadExcelTemplate;
 
   // Open import modal for active tab
   const handleOpenImportModal = (tabKey = activeTab) => {
@@ -195,58 +218,44 @@ const MasterDataScreen = ({ masterData, notify, refreshData }) => {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // Handle file selection and parsing
-  const handleFileChange = (e) => {
+  // Handle file selection and parsing (.xlsx, .xls, .csv, .txt, .tsv)
+  const handleFileChange = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    if (!file.name.endsWith('.csv') && file.type !== 'text/csv') {
-      setImportError('Please upload a valid .csv file.');
-      return;
-    }
 
     setFileName(file.name);
     setImportError('');
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const text = event.target?.result;
-        if (typeof text !== 'string') return;
-        
-        const { headers, rows } = parseCSV(text);
-        if (rows.length === 0) {
-          setImportError('The selected CSV file does not contain any data rows.');
-          setParsedData(null);
-          return;
-        }
-
-        const config = TAB_CONFIG[importTargetTab];
-        // Validate required header
-        const hasRequired = headers.some(h => 
-          h === config.requiredCol || 
-          h.includes(config.requiredCol) || 
-          (config.requiredCol === 'common_name' && (h === 'name' || h === 'crop')) ||
-          (config.requiredCol === 'type_name' && (h === 'name' || h === 'type')) ||
-          (config.requiredCol === 'scientific_name' && (h === 'species' || h === 'name')) ||
-          (config.requiredCol === 'title' && (h === 'name' || h === 'article'))
-        );
-
-        if (!hasRequired) {
-          setImportError(`Missing required column "${config.requiredCol}". Please download the template to view the expected format.`);
-        }
-
-        setParsedData({ headers, rows });
-      } catch (err) {
-        console.error('Error parsing CSV:', err);
-        setImportError('Could not parse the CSV file. Please verify its formatting.');
+    try {
+      const { headers, rows } = await parseDataFile(file);
+      if (!rows || rows.length === 0) {
+        setImportError('The selected file does not contain any data rows.');
         setParsedData(null);
+        return;
       }
-    };
-    reader.onerror = () => {
-      setImportError('Failed to read file from disk.');
-    };
-    reader.readAsText(file);
+
+      const config = TAB_CONFIG[importTargetTab];
+      // Validate required header
+      const hasRequired = headers.some(h => 
+        h === config.requiredCol || 
+        h.includes(config.requiredCol) || 
+        (config.requiredCol === 'common_name' && (h === 'name' || h === 'crop')) ||
+        (config.requiredCol === 'type_name' && (h === 'name' || h === 'type')) ||
+        (config.requiredCol === 'scientific_name' && (h === 'species' || h === 'name')) ||
+        (config.requiredCol === 'title' && (h === 'name' || h === 'article')) ||
+        (config.requiredCol === 'method_name' && (h === 'method' || h === 'sequencing_method' || h === 'name'))
+      );
+
+      if (!hasRequired) {
+        setImportError(`Missing required column "${config.requiredCol}". Please download the template to view the expected format.`);
+      }
+
+      setParsedData({ headers, rows });
+    } catch (err) {
+      console.error('Error parsing file:', err);
+      setImportError(err.message || 'Could not parse the file. Please verify its formatting.');
+      setParsedData(null);
+    }
   };
 
   // Process and send the imported batch
@@ -445,22 +454,33 @@ const MasterDataScreen = ({ masterData, notify, refreshData }) => {
 
         {/* Global Action Buttons */}
         <div className="flex items-center gap-2.5 flex-wrap">
-          <button
-            onClick={() => handleDownloadTemplate(activeTab)}
-            className="inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 hover:text-emerald-700 hover:border-emerald-300 transition-colors shadow-xs"
-            title={`Download CSV template for ${currentTabConfig.label}`}
-          >
-            <Download className="w-4 h-4 text-emerald-600" />
-            <span>Download CSV Template</span>
-          </button>
+          <div className="flex items-center rounded-lg border border-slate-300 bg-white shadow-xs overflow-hidden">
+            <button
+              onClick={() => handleDownloadExcelTemplate(activeTab)}
+              className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 transition-colors cursor-pointer"
+              title={`Download rich Excel workbook (.xlsx) template with existing records for ${currentTabConfig.label}`}
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+              <span>Download Excel Template (.xlsx)</span>
+            </button>
+            <div className="h-5 w-px bg-slate-200"></div>
+            <button
+              onClick={() => handleDownloadCSVTemplate(activeTab)}
+              className="inline-flex items-center gap-1 px-2.5 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+              title={`Download plain CSV template for ${currentTabConfig.label}`}
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>CSV</span>
+            </button>
+          </div>
           
           <button
             onClick={() => handleOpenImportModal(activeTab)}
-            className="inline-flex items-center gap-2 px-3.5 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs"
-            title={`Import master data CSV for ${currentTabConfig.label}`}
+            className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors shadow-xs cursor-pointer"
+            title={`Import data for ${currentTabConfig.label} using Excel (.xlsx/.xls), CSV (.csv), or text (.txt/.tsv)`}
           >
             <Upload className="w-4 h-4" />
-            <span>Import Master Data</span>
+            <span>Import Data File</span>
           </button>
         </div>
       </header>
@@ -859,19 +879,29 @@ const MasterDataScreen = ({ masterData, notify, refreshData }) => {
 
               {/* Format Description & Template Download Card */}
               <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2.5 text-xs text-slate-600">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between flex-wrap gap-2">
                   <span className="font-semibold text-slate-700 flex items-center gap-1.5">
                     <HelpCircle className="w-4 h-4 text-slate-400" />
-                    Expected CSV Column Format for {TAB_CONFIG[importTargetTab].label}:
+                    Expected Columns for {TAB_CONFIG[importTargetTab].label}:
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => handleDownloadTemplate(importTargetTab)}
-                    className="text-emerald-600 hover:text-emerald-700 font-semibold hover:underline flex items-center gap-1"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    Download Template
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadExcelTemplate(importTargetTab)}
+                      className="text-emerald-700 hover:text-emerald-900 font-semibold bg-emerald-100/70 hover:bg-emerald-200 px-2 py-0.5 rounded transition-colors flex items-center gap-1 cursor-pointer"
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                      Excel Template (.xlsx)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadCSVTemplate(importTargetTab)}
+                      className="text-slate-600 hover:text-slate-800 font-medium bg-white border border-slate-200 px-2 py-0.5 rounded hover:bg-slate-50 transition-colors flex items-center gap-1 cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5 text-slate-400" />
+                      CSV (.csv)
+                    </button>
+                  </div>
                 </div>
                 
                 <div className="flex flex-wrap gap-1.5">
@@ -894,24 +924,30 @@ const MasterDataScreen = ({ masterData, notify, refreshData }) => {
               {/* File Selector */}
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1.5">
-                  Upload CSV File
+                  Upload Data File (Excel, CSV, or Text)
                 </label>
                 <div className="border-2 border-dashed border-slate-300 hover:border-emerald-500 rounded-xl p-6 text-center transition-colors bg-slate-50/50">
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".csv,text/csv"
+                    accept=".xlsx,.xls,.csv,.txt,.tsv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                     onChange={handleFileChange}
                     className="hidden"
-                    id="csv-file-input"
+                    id="master-data-file-input"
                   />
-                  <label htmlFor="csv-file-input" className="cursor-pointer flex flex-col items-center justify-center">
-                    <Upload className="w-8 h-8 text-slate-400 mb-2" />
+                  <label htmlFor="master-data-file-input" className="cursor-pointer flex flex-col items-center justify-center">
+                    {fileName?.endsWith('.xlsx') || fileName?.endsWith('.xls') ? (
+                      <FileSpreadsheet className="w-8 h-8 text-emerald-600 mb-2" />
+                    ) : fileName?.endsWith('.txt') ? (
+                      <FileText className="w-8 h-8 text-blue-600 mb-2" />
+                    ) : (
+                      <Upload className="w-8 h-8 text-slate-400 mb-2" />
+                    )}
                     <span className="text-sm font-medium text-slate-700">
-                      {fileName ? fileName : 'Click to select or drag and drop a .csv file'}
+                      {fileName ? fileName : 'Click to select or drag and drop an Excel (.xlsx), CSV (.csv), or Text file (.txt)'}
                     </span>
                     <span className="text-xs text-slate-400 mt-1">
-                      UTF-8 encoded CSV files up to 5MB supported
+                      Works seamlessly with Microsoft Excel, Google Sheets, CSV, or tab-delimited text exports
                     </span>
                   </label>
                 </div>
