@@ -635,6 +635,7 @@ async function startServer() {
   // --- FULL CAPTURE COMPOSITE ENDPOINT ---
   app.post(['/capture-full', '/capture-full/'], (req: Request, res: Response) => {
     const {
+      plant_specimen_id,
       crop_species_id,
       specimen_identifier,
       latitude,
@@ -650,19 +651,25 @@ async function startServer() {
       created_by,
     } = req.body;
 
-    const identifier = specimen_identifier || `SPEC-${new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14)}`;
+    let targetSpecimen: PlantSpecimen | undefined;
+    if (plant_specimen_id) {
+      targetSpecimen = specimens.find(s => s.plant_specimen_id === parseInt(plant_specimen_id));
+    }
 
-    const newSpecimen: PlantSpecimen = {
-      plant_specimen_id: nextSpecimenId++,
-      crop_species_id: parseInt(crop_species_id),
-      specimen_identifier: identifier,
-      latitude: parseFloat(latitude),
-      longitude: parseFloat(longitude),
-      location_estimated: Boolean(location_estimated),
-      created_by: created_by || 'Researcher Admin',
-      created_at: new Date().toISOString(),
-    };
-    specimens.push(newSpecimen);
+    if (!targetSpecimen) {
+      const identifier = specimen_identifier || `SPEC-${new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14)}`;
+      targetSpecimen = {
+        plant_specimen_id: nextSpecimenId++,
+        crop_species_id: parseInt(crop_species_id),
+        specimen_identifier: identifier,
+        latitude: parseFloat(latitude),
+        longitude: parseFloat(longitude),
+        location_estimated: Boolean(location_estimated),
+        created_by: created_by || 'Researcher Admin',
+        created_at: new Date().toISOString(),
+      };
+      specimens.push(targetSpecimen);
+    }
 
     let seqId = sequencing_method_id ? parseInt(sequencing_method_id) : null;
     let seqName = sequencing_method || null;
@@ -683,7 +690,7 @@ async function startServer() {
       for (const structId of structList) {
         observations.push({
           observation_id: nextObsId++,
-          plant_specimen_id: newSpecimen.plant_specimen_id,
+          plant_specimen_id: targetSpecimen.plant_specimen_id,
           endophyte_id: endoId,
           plant_structure_id: structId,
           reference_id: reference_id ? parseInt(reference_id) : null,

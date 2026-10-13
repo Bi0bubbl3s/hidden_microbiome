@@ -12,7 +12,6 @@ import markerShadow from 'leaflet/dist/images/marker-shadow.png';
 import api from './utils/api';
 import Toast from './components/Toast';
 import MapScreen from './screens/MapScreen';
-import SpecimenScreen from './screens/SpecimenScreen';
 import CaptureScreen from './screens/CaptureScreen';
 import MasterDataScreen from './screens/MasterDataScreen';
 
@@ -93,9 +92,7 @@ export default function App() {
   const renderContent = () => {
     switch(currentView) {
       case 'map': return <MapScreen specimens={masterData.specimens} observations={masterData.observations} />;
-      // NEW: Added the routing for the explorer
       case 'explorer': return <DataExplorerScreen masterData={masterData} />;
-      case 'specimen': return <SpecimenScreen masterData={masterData} notify={showToast} refreshData={loadAllData} />;
       case 'form': return <CaptureScreen masterData={masterData} notify={showToast} refreshData={loadAllData} />;
       case 'master': return <MasterDataScreen masterData={masterData} notify={showToast} refreshData={loadAllData} />;
       default: return <MapScreen specimens={masterData.specimens} observations={masterData.observations} />;
@@ -127,10 +124,6 @@ export default function App() {
             <p className="px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Data Entry</p>
           </div>
 
-          <button onClick={() => setCurrentView('specimen')} className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${currentView === 'specimen' ? 'bg-emerald-600/10 text-emerald-400' : 'hover:bg-slate-800 hover:text-white'}`}>
-            <Sprout className="w-5 h-5" />
-            <span className="font-medium">Register Specimen</span>
-          </button>
           <button onClick={() => setCurrentView('form')} className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${currentView === 'form' ? 'bg-emerald-600/10 text-emerald-400' : 'hover:bg-slate-800 hover:text-white'}`}>
             <FilePlus className="w-5 h-5" />
             <span className="font-medium">Log Observation</span>

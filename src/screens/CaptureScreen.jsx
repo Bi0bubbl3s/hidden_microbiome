@@ -1,30 +1,29 @@
 // @ts-nocheck
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { 
   FilePlus, 
-  CheckSquare, 
   Search, 
   ExternalLink, 
-  Dna, 
   Download, 
   Upload, 
   FileSpreadsheet, 
   X, 
   AlertCircle, 
   CheckCircle2, 
-  HelpCircle, 
   Leaf, 
-  Microscope, 
   Database, 
-  BookOpen, 
   Binary, 
   Sparkles, 
   RefreshCw,
-  Info,
-  FileText,
-  FileCheck
+  Crosshair,
+  Compass,
+  Plus,
+  Check,
+  User,
+  Hash,
+  Calendar
 } from 'lucide-react';
-import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, useMapEvents, useMap } from 'react-leaflet';
 import api from '../utils/api'; 
 import { parseDataFile, downloadExcelFile, downloadCSVFile } from '../utils/fileImportExport'; 
 
@@ -59,21 +58,34 @@ const parseCoordinates = (input) => {
   return { lat, lng };
 };
 
-const MapClickHandler = ({ setFormData }) => {
+// Component to handle map clicks
+const MapClickHandler = ({ onLocationSelect }) => {
   useMapEvents({
     click(e) {
-      setFormData(prev => ({
-        ...prev,
-        latitude: e.latlng.lat.toFixed(6),
-        longitude: e.latlng.lng.toFixed(6)
-      }));
+      onLocationSelect(e.latlng.lat.toFixed(6), e.latlng.lng.toFixed(6));
     },
   });
   return null; 
 };
 
+// Component to recenter map when coordinates change
+const MapRecenter = ({ lat, lng }) => {
+  const map = useMap();
+  useEffect(() => {
+    if (lat && lng && !isNaN(parseFloat(lat)) && !isNaN(parseFloat(lng))) {
+      map.panTo([parseFloat(lat), parseFloat(lng)]);
+    }
+  }, [lat, lng, map]);
+  return null;
+};
+
 const CaptureScreen = ({ masterData, notify, refreshData }) => {
+  // Specimen mode: 'new' (register new physical specimen) or 'existing' (link to previously logged specimen)
+  const [specimenMode, setSpecimenMode] = useState('new');
+  const [selectedExistingSpecimenId, setSelectedExistingSpecimenId] = useState('');
+
   const [formData, setFormData] = useState({
+    specimen_identifier: '',
     crop_species_id: '', 
     new_crop_name: '',
     new_crop_scientific: '',
@@ -94,16 +106,24 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
     new_sequencing_platform: '',
     ncbi_accession: '',
     observation_date: new Date().toISOString().split('T')[0],
-    created_by: 'Researcher Admin'
+    created_by: 'Researcher Admin',
+    isolation_notes: ''
   });
 
+  // Inline creation states
   const [isNewCrop, setIsNewCrop] = useState(false);
   const [isNewReference, setIsNewReference] = useState(false);
   const [isNewEndophyte, setIsNewEndophyte] = useState(false);
   const [isNewSequencingMethod, setIsNewSequencingMethod] = useState(false);
+  const [isAddingStructure, setIsAddingStructure] = useState(false);
+  const [newStructureName, setNewStructureName] = useState('');
+  
+  // Search & Filter state
   const [endoSearch, setEndoSearch] = useState('');
+  const [pastedCoordinates, setPastedCoordinates] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // CSV Import State
+  // CSV/Excel Import Modal State
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [csvFile, setCsvFile] = useState(null);
   const [csvError, setCsvError] = useState(null);
@@ -112,6 +132,76 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
   const [importResult, setImportResult] = useState(null);
   const fileInputRef = useRef(null);
 
+  // Auto-generate a standardized specimen voucher code
+  const handleGenerateSpecimenCode = () => {
+    const selectedCrop = masterData.crops?.find(c => String(c.crop_species_id) === String(formData.crop_species_id));
+    const prefix = selectedCrop ? selectedCrop.common_name.slice(0, 3).toUpperCase() : 'SPEC';
+    const year = new Date().getFullYear();
+    const randomSerial = Math.floor(1000 + Math.random() * 9000);
+    const code = `${prefix}-${year}-${randomSerial}`;
+    setFormData(prev => ({ ...prev, specimen_identifier: code }));
+    notify(`Generated specimen voucher ID: ${code}`, 'success');
+  };
+
+  // Switch to existing specimen and auto-populate known values
+  const handleSelectExistingSpecimen = (specimenId) => {
+    setSelectedExistingSpecimenId(specimenId);
+    if (!specimenId) return;
+
+    const spec = masterData.specimens?.find(s => String(s.plant_specimen_id) === String(specimenId));
+    if (spec) {
+      setFormData(prev => ({
+        ...prev,
+        specimen_identifier: spec.specimen_identifier || `SPEC-${spec.plant_specimen_id}`,
+        crop_species_id: spec.crop_species_id ? String(spec.crop_species_id) : '',
+        latitude: spec.latitude !== undefined && spec.latitude !== null ? String(spec.latitude) : '',
+        longitude: spec.longitude !== undefined && spec.longitude !== null ? String(spec.longitude) : '',
+        location_estimated: Boolean(spec.location_estimated),
+        created_by: spec.created_by || prev.created_by
+      }));
+      setIsNewCrop(false);
+      notify(`Linked Specimen: ${spec.specimen_identifier}`, 'success');
+    }
+  };
+
+  // Get current device GPS location
+  const handleUseCurrentLocation = () => {
+    if (!navigator.geolocation) {
+      notify('Geolocation is not supported by your browser.', 'error');
+      return;
+    }
+    notify('Requesting GPS location from browser...', 'info');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setFormData(prev => ({
+          ...prev,
+          latitude: pos.coords.latitude.toFixed(6),
+          longitude: pos.coords.longitude.toFixed(6),
+          location_estimated: false
+        }));
+        notify(`GPS coordinates obtained: ${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)}`, 'success');
+      },
+      (err) => {
+        notify(`Unable to retrieve GPS: ${err.message}`, 'error');
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  };
+
+  // Handle Pasting DMS Coordinates from published literature / PDF
+  const handleConvertPastedCoords = () => {
+    if (!pastedCoordinates.trim()) return;
+    const { lat, lng } = parseCoordinates(pastedCoordinates);
+    if (lat && lng) {
+      setFormData(prev => ({ ...prev, latitude: lat, longitude: lng }));
+      setPastedCoordinates('');
+      notify(`Coordinates parsed: ${lat}, ${lng}`, 'success');
+    } else {
+      notify('Could not parse DMS format. Example format: 33°55\'12"S 18°25\'10"E', 'error');
+    }
+  };
+
+  // Toggle structure selection
   const handleStructureToggle = (structureId) => {
     setFormData((prev) => {
       const currentIds = prev.plant_structure_ids;
@@ -121,6 +211,26 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
     });
   };
 
+  // Inline add new plant structure
+  const handleCreateNewStructure = async (e) => {
+    e.preventDefault();
+    if (!newStructureName.trim()) return;
+    try {
+      const created = await api.post('/structures/', { name: newStructureName.trim() });
+      setFormData(prev => ({
+        ...prev,
+        plant_structure_ids: [...prev.plant_structure_ids, created.plant_structure_id.toString()]
+      }));
+      setNewStructureName('');
+      setIsAddingStructure(false);
+      refreshData();
+      notify(`Added & selected new plant tissue: "${created.name}"`, 'success');
+    } catch (err) {
+      notify(err.message, 'error');
+    }
+  };
+
+  // Toggle endophyte selection
   const handleEndophyteToggle = (endoId) => {
     setFormData((prev) => {
       const currentIds = prev.endophyte_ids;
@@ -130,10 +240,9 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
     });
   };
 
-  // Download template function in Excel (.xlsx) or CSV format
+  // Download Excel Workbook (.xlsx)
   const handleDownloadExcelTemplate = () => {
     try {
-      // 1. Observation Data Sheet
       const observationHeaders = [
         'crop_common_name',
         'crop_scientific_name',
@@ -211,151 +320,70 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
           reference_link: 'https://doi.org/10.1016/j.funbio.2023.01.002',
           specimen_identifier: 'MAI-2024-003',
           observation_date: '2024-06-01'
-        },
-        {
-          crop_common_name: 'Canola',
-          crop_scientific_name: 'Brassica napus',
-          plant_group: 'Dicot',
-          latitude: '-33.9249',
-          longitude: '18.4241',
-          location_estimated: 'true',
-          plant_structure: 'Stem',
-          endophyte_scientific_name: 'Trichoderma atroviride',
-          endophyte_type: 'Fungal',
-          sequencing_method: 'NGS - Amplicon Metabarcoding',
-          sequencing_platform: 'Illumina MiSeq',
-          ncbi_accession: 'MK876543',
-          reference_title: 'Foliar and vascular fungal endophytes of oilseed rape',
-          publication_year: '2024',
-          reference_link: 'https://doi.org/10.1111/mpp.13421',
-          specimen_identifier: 'CAN-2024-004',
-          observation_date: '2024-06-20'
-        },
-        {
-          crop_common_name: 'Sorghum',
-          crop_scientific_name: 'Sorghum bicolor',
-          plant_group: 'Monocot',
-          latitude: '40.8136',
-          longitude: '-96.7026',
-          location_estimated: 'false',
-          plant_structure: 'Coleoptile',
-          endophyte_scientific_name: 'Bacillus amyloliquefaciens',
-          endophyte_type: 'Bacterial',
-          sequencing_method: 'Sanger Sequencing',
-          sequencing_platform: 'Capillary Electrophoresis',
-          ncbi_accession: 'CP054321',
-          reference_title: 'Plant growth promoting bacilli of grain sorghum',
-          publication_year: '2023',
-          reference_link: 'https://doi.org/10.1038/s41598-023-0001',
-          specimen_identifier: 'SOR-2024-005',
-          observation_date: '2024-07-04'
         }
       ];
 
-      // 2. Instructions Sheet
-      const instructionsData = [
-        ['Endophyte Observation Import - Field Guidelines & Auto Master Data'],
-        [''],
-        ['Column Header', 'Required / Optional', 'Auto-Created in Master Data if New?', 'Format / Accepted Values', 'Description'],
-        ['crop_common_name', 'Required', 'YES (Auto-added to Crops)', 'Text (e.g. Maize, Pearl Millet)', 'Common name of host plant species'],
-        ['crop_scientific_name', 'Optional', 'YES (Saved to Crop)', 'Text (e.g. Zea mays)', 'Botanical binomial name'],
-        ['plant_group', 'Optional', 'YES', 'Monocot / Dicot / Unknown', 'Taxonomic angiosperm group'],
-        ['latitude', 'Recommended', 'Specimen Coords', 'Decimal (-90.0 to 90.0)', 'Specimen collection latitude'],
-        ['longitude', 'Recommended', 'Specimen Coords', 'Decimal (-180.0 to 180.0)', 'Specimen collection longitude'],
-        ['location_estimated', 'Optional', 'NO', 'true / false', 'Whether GPS coordinates are approximated'],
-        ['plant_structure', 'Optional', 'YES (Auto-added to Tissues)', 'Text (e.g. Root; Stem; Nodule)', 'Plant tissues colonized; separate multiples with semicolon (;)'],
-        ['endophyte_scientific_name', 'Required', 'YES (Auto-added to Endophytes)', 'Text (e.g. Streptomyces avermitilis)', 'Microorganism species scientific name'],
-        ['endophyte_type', 'Optional', 'YES (Auto-added to Types)', 'Bacterial / Fungal / Actinomycete / Viral / Other', 'Classification of endophyte organism'],
-        ['sequencing_method', 'Optional', 'YES (Auto-added to Methods)', 'Text (e.g. Sanger, NGS WGS, Nanopore)', 'Sequencing molecular technique'],
-        ['sequencing_platform', 'Optional', 'YES', 'Text (e.g. Illumina NovaSeq, Oxford Nanopore)', 'Sequencing instrument platform'],
-        ['ncbi_accession', 'Optional', 'Saved with Observation', 'Text (e.g. PRJNA912834, OQ542198)', 'NCBI GenBank / BioProject / SRA accession code'],
-        ['reference_title', 'Optional', 'YES (Auto-added to References)', 'Text', 'Journal article or publication title'],
-        ['publication_year', 'Optional', 'YES', 'Year number (e.g. 2024)', 'Year of scientific literature'],
-        ['reference_link', 'Optional', 'YES', 'URL / DOI (https://doi.org/...)', 'Direct hyperlink or DOI to study'],
-        ['specimen_identifier', 'Optional', 'YES (Used or Auto-generated)', 'Text (e.g. PMI-2024-001)', 'Unique voucher or sample code; left blank to auto-generate'],
-        ['observation_date', 'Optional', 'Observation Record', 'YYYY-MM-DD (e.g. 2024-06-15)', 'Collection or observation date']
-      ];
-
-      // 3. Existing Master Data Reference Sheet for convenient copy-pasting
-      const currentCrops = (masterData.crops || []).map(c => ({
-        Crop_Common_Name: c.common_name,
-        Scientific_Name: c.scientific_name || '',
-        Plant_Group: c.plant_group || ''
+      const cropReferenceRows = (masterData.crops || []).map(c => ({
+        crop_species_id: c.crop_species_id,
+        common_name: c.common_name,
+        scientific_name: c.scientific_name || '',
+        plant_group: c.plant_group || 'Unknown'
       }));
 
-      const currentEndophytes = (masterData.endophytes || []).map(e => ({
-        Endophyte_Scientific_Name: e.scientific_name,
-        Classification_Type: e.endophyte_types?.type_name || ''
-      }));
-
-      const currentStructures = (masterData.structures || []).map(s => ({
-        Tissue_Structure_Name: s.structure_name
-      }));
-
-      const currentSeqMethods = (masterData.sequencingMethods || []).map(m => ({
-        Sequencing_Method: m.method_name,
-        Platform: m.platform_type || ''
-      }));
-
-      downloadExcelFile({
-        filename: 'observation_import_template.xlsx',
-        sheets: [
-          {
-            name: 'Observations_Template',
-            headers: observationHeaders,
-            rows: sampleRows
-          },
-          {
-            name: 'Column_Guidelines',
-            data2D: instructionsData
-          },
-          {
-            name: 'Existing_Crops',
-            headers: ['Crop_Common_Name', 'Scientific_Name', 'Plant_Group'],
-            rows: currentCrops
-          },
-          {
-            name: 'Existing_Endophytes',
-            headers: ['Endophyte_Scientific_Name', 'Classification_Type'],
-            rows: currentEndophytes
-          },
-          {
-            name: 'Existing_Tissues',
-            headers: ['Tissue_Structure_Name'],
-            rows: currentStructures
-          },
-          {
-            name: 'Existing_Seq_Methods',
-            headers: ['Sequencing_Method', 'Platform'],
-            rows: currentSeqMethods
-          }
-        ]
+      const endophyteReferenceRows = (masterData.endophytes || []).map(e => {
+        const type = masterData.endophyteTypes?.find(t => t.endophyte_type_id === e.endophyte_type_id);
+        return {
+          endophyte_id: e.endophyte_id,
+          scientific_name: e.scientific_name,
+          taxonomy_type: type?.type_name || ''
+        };
       });
 
-      notify('Excel (.xlsx) observation template with guidelines downloaded!', 'success');
+      const structureReferenceRows = (masterData.structures || []).map(s => ({
+        plant_structure_id: s.plant_structure_id,
+        name: s.name
+      }));
+
+      const seqMethodsReferenceRows = (masterData.sequencingMethods || []).map(m => ({
+        sequencing_method_id: m.sequencing_method_id,
+        method_name: m.method_name,
+        platform_type: m.platform_type || ''
+      }));
+
+      const sheets = [
+        { name: 'Observations_Template', headers: observationHeaders, rows: sampleRows },
+        { name: 'Ref_Crops', headers: ['crop_species_id', 'common_name', 'scientific_name', 'plant_group'], rows: cropReferenceRows },
+        { name: 'Ref_Endophytes', headers: ['endophyte_id', 'scientific_name', 'taxonomy_type'], rows: endophyteReferenceRows },
+        { name: 'Ref_PlantStructures', headers: ['plant_structure_id', 'name'], rows: structureReferenceRows },
+        { name: 'Ref_SequencingMethods', headers: ['sequencing_method_id', 'method_name', 'platform_type'], rows: seqMethodsReferenceRows }
+      ];
+
+      downloadExcelFile(sheets, 'Microbiome_Observation_Template.xlsx');
+      notify('Excel template (.xlsx) downloaded with reference sheets!', 'success');
     } catch (err) {
-      console.error('Error generating Excel template:', err);
-      notify('Failed to generate Excel template. Downloading CSV instead.', 'warning');
-      handleDownloadCSVTemplate();
+      console.error(err);
+      notify('Failed to generate Excel file: ' + err.message, 'error');
     }
   };
 
+  // Download standard CSV template
   const handleDownloadCSVTemplate = () => {
     try {
       downloadCSVFile({
-        filename: 'observation_import_template.csv',
+        filename: 'microbiome_observation_template.csv',
         content: OBSERVATION_CSV_TEMPLATE
       });
-      notify('Observation CSV template downloaded successfully!', 'success');
-    } catch {
-      notify('Failed to generate CSV template.', 'error');
+      notify('CSV template (.csv) downloaded successfully!', 'success');
+    } catch (err) {
+      notify('Failed to download CSV: ' + err.message, 'error');
     }
   };
 
-  // Universal File Selection & Parsing (.xlsx, .xls, .csv, .tsv, .txt)
+  // Handle uploaded data file
   const handleFileChange = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
     setCsvFile(file);
     setCsvError(null);
     setImportResult(null);
@@ -368,13 +396,12 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
         return;
       }
 
-      // Validate basic headers: must have at least crop and endophyte identifier
       const first = rows[0];
       const hasCrop = 'crop_common_name' in first || 'crop_name' in first || 'common_name' in first || 'crop' in first;
       const hasEndo = 'endophyte_scientific_name' in first || 'endophyte_name' in first || 'scientific_name' in first || 'endophyte' in first;
 
       if (!hasCrop || !hasEndo) {
-        setCsvError('File requires columns for host crop (e.g. crop_common_name) and endophyte species (e.g. endophyte_scientific_name). Check the template guidelines.');
+        setCsvError('File requires columns for host crop (e.g. crop_common_name) and endophyte species (e.g. endophyte_scientific_name). Check template guidelines.');
       }
 
       setParsedRows(rows);
@@ -385,7 +412,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
     }
   };
 
-  // Detect which entities in the parsed CSV are brand new (not pre-existing in masterData)
+  // Master data analysis of batch rows
   const masterDataAnalysis = useMemo(() => {
     if (!parsedRows || parsedRows.length === 0) {
       return {
@@ -469,10 +496,10 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
     };
   }, [parsedRows, masterData]);
 
-  // Execute CSV batch import
+  // Execute batch import
   const handleExecuteImport = async () => {
     if (!parsedRows || parsedRows.length === 0) {
-      return notify('Please select a valid CSV file first.', 'error');
+      return notify('Please select a valid data file first.', 'error');
     }
 
     setIsImporting(true);
@@ -494,37 +521,44 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
       notify(`Successfully imported ${res.observations_created} observation(s)!${extraText}`, 'success');
       await refreshData();
       
-      // Auto close after brief pause or user can inspect results
       setTimeout(() => {
         setIsImportModalOpen(false);
         setCsvFile(null);
         setParsedRows([]);
         setImportResult(null);
-      }, 1400);
+      }, 1500);
 
     } catch (err) {
-      notify(err.message || 'Failed to import CSV observations', 'error');
+      notify(err.message || 'Failed to import observations', 'error');
     } finally {
       setIsImporting(false);
     }
   };
 
+  // Submit manual observation form
   const handleSubmit = async (e) => {
     e.preventDefault();
     
-    // Safety checks
     if (formData.plant_structure_ids.length === 0) {
-      return notify('Please select at least one plant structure.', 'error');
+      return notify('Please select at least one plant tissue/structure.', 'error');
     }
     if (formData.endophyte_ids.length === 0 && !isNewEndophyte) {
-      return notify('Please select at least one endophyte, or add a new one.', 'error');
+      return notify('Please select at least one endophyte, or register a new one.', 'error');
+    }
+    if (specimenMode === 'new' && !isNewCrop && !formData.crop_species_id) {
+      return notify('Please select a host crop species.', 'error');
+    }
+    if (specimenMode === 'existing' && !selectedExistingSpecimenId) {
+      return notify('Please select an existing specimen to link.', 'error');
     }
 
+    setIsSubmitting(true);
     try {
       let finalReferenceId = formData.reference_id ? parseInt(formData.reference_id) : null;
       let finalEndophyteIds = [...formData.endophyte_ids.map(id => parseInt(id))];
       let finalCropId = formData.crop_species_id ? parseInt(formData.crop_species_id) : null;
 
+      // Create new crop if requested
       if (isNewCrop && formData.new_crop_name && formData.new_crop_group) {
         const cropPayload = {
           common_name: formData.new_crop_name,
@@ -535,6 +569,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
         finalCropId = newCrop.crop_species_id;
       }
 
+      // Create new reference if requested
       if (isNewReference && formData.new_reference_title) {
         const refPayload = {
           title: formData.new_reference_title,
@@ -545,6 +580,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
         finalReferenceId = newRef.reference_id; 
       }
 
+      // Create new endophyte if requested
       if (isNewEndophyte && formData.new_endophyte_name && formData.new_endophyte_type_id) {
         const endoPayload = {
           scientific_name: formData.new_endophyte_name,
@@ -554,7 +590,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
         finalEndophyteIds.push(newEndo.endophyte_id);
       }
 
-      // Handle Sequencing Method (Selected or New)
+      // Handle Sequencing Method
       let finalSequencingMethodId = formData.sequencing_method_id ? parseInt(formData.sequencing_method_id) : null;
       let finalSequencingMethodName = null;
 
@@ -573,10 +609,20 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
 
       const cleanAccession = formData.ncbi_accession ? formData.ncbi_accession.trim().toUpperCase() : null;
 
+      // Determine specimen identifier
+      let finalSpecimenIdentifier = formData.specimen_identifier.trim();
+      if (!finalSpecimenIdentifier) {
+        const cropObj = masterData.crops?.find(c => c.crop_species_id === finalCropId);
+        const prefix = cropObj ? cropObj.common_name.slice(0, 3).toUpperCase() : 'SPEC';
+        finalSpecimenIdentifier = `${prefix}-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+      }
+
       const fullPayload = {
+        plant_specimen_id: specimenMode === 'existing' && selectedExistingSpecimenId ? parseInt(selectedExistingSpecimenId) : undefined,
         crop_species_id: finalCropId,
-        latitude: parseFloat(formData.latitude),
-        longitude: parseFloat(formData.longitude),
+        specimen_identifier: finalSpecimenIdentifier,
+        latitude: parseFloat(formData.latitude) || 0,
+        longitude: parseFloat(formData.longitude) || 0,
         location_estimated: formData.location_estimated,
         endophyte_ids: finalEndophyteIds,
         plant_structure_ids: formData.plant_structure_ids.map(id => parseInt(id)),
@@ -590,64 +636,104 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
 
       await api.post('/capture-full/', fullPayload);
       
-      notify(`Success! Recorded ${finalEndophyteIds.length * formData.plant_structure_ids.length} observation(s)!`, 'success');
-      refreshData();
+      const totalCreated = finalEndophyteIds.length * formData.plant_structure_ids.length;
+      notify(`Observation logged! Recorded ${totalCreated} observation record(s) for specimen "${finalSpecimenIdentifier}".`, 'success');
+      await refreshData();
       
+      // Reset form fields
       setFormData({ 
-        crop_species_id: '', new_crop_name: '', new_crop_scientific: '', new_crop_group: '',
-        latitude: '', longitude: '', location_estimated: false,
-        endophyte_ids: [], plant_structure_ids: [], reference_id: '',
-        new_reference_title: '', new_reference_year: '', new_reference_link: '',
-        new_endophyte_name: '', new_endophyte_type_id: '',
-        sequencing_method_id: '', new_sequencing_name: '', new_sequencing_platform: '',
+        specimen_identifier: '',
+        crop_species_id: '', 
+        new_crop_name: '', 
+        new_crop_scientific: '', 
+        new_crop_group: '',
+        latitude: '', 
+        longitude: '', 
+        location_estimated: false,
+        endophyte_ids: [], 
+        plant_structure_ids: [], 
+        reference_id: '',
+        new_reference_title: '', 
+        new_reference_year: '', 
+        new_reference_link: '',
+        new_endophyte_name: '',
+        new_endophyte_type_id: '',
+        sequencing_method_id: '',
+        new_sequencing_name: '',
+        new_sequencing_platform: '',
         ncbi_accession: '',
         observation_date: new Date().toISOString().split('T')[0],
-        created_by: 'Researcher Admin'
+        created_by: 'Researcher Admin',
+        isolation_notes: ''
       });
       setIsNewCrop(false);
-      setIsNewReference(false); 
+      setIsNewReference(false);
       setIsNewEndophyte(false);
       setIsNewSequencingMethod(false);
-      setEndoSearch('');
+      setSelectedExistingSpecimenId('');
+      setSpecimenMode('new');
+
     } catch (error) {
-      notify(error.message, 'error');
+      console.error(error);
+      notify(error.message || 'Error saving observation.', 'error');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  // Filter endophytes by search term so it's easy to find them
-  const filteredEndophytes = masterData.endophytes?.filter(e => 
+  // Filtered endophytes for searching
+  const filteredEndophytes = (masterData.endophytes || []).filter(e => 
     e.scientific_name.toLowerCase().includes(endoSearch.toLowerCase())
-  ) || [];
+  );
+
+  // Selected crop info helper
+  const activeCrop = masterData.crops?.find(c => String(c.crop_species_id) === String(formData.crop_species_id));
+
+  // Count calculations
+  const totalSpecimens = masterData.specimens?.length || 0;
+  const totalObservations = masterData.observations?.length || 0;
+  const totalCrops = masterData.crops?.length || 0;
+  const projectedCount = (formData.endophyte_ids.length + (isNewEndophyte && formData.new_endophyte_name ? 1 : 0)) * formData.plant_structure_ids.length;
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6 pb-12">
-      {/* Top Header with CSV Quick Actions */}
-      <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-slate-200">
+    <div className="max-w-6xl mx-auto space-y-8 pb-16">
+      
+      {/* Top Header & Quick Actions */}
+      <header className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-4 border-b border-slate-200">
         <div>
-          <h2 className="text-2xl font-bold text-slate-800">Log Observation</h2>
-          <p className="text-slate-500 text-sm mt-0.5">
-            Capture endophyte occurrences, tissue localization, and molecular evidence.
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-bold text-emerald-800 uppercase tracking-widest bg-emerald-50 border border-emerald-200/80 px-2 py-0.5 rounded-md">
+              Primary Data Entry
+            </span>
+            <span className="text-xs text-slate-400">·</span>
+            <span className="text-xs text-slate-500 font-medium">Specimen Voucher & Microbiome Log</span>
+          </div>
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+            Log Observation & Specimen
+          </h1>
+          <p className="text-slate-600 text-sm mt-1 max-w-2xl">
+            Register plant vouchers, sample georeferencing, anatomical tissue tropism, isolated endophytes, and NCBI molecular evidence in one unified workspace.
           </p>
         </div>
 
-        {/* Action Toolbar */}
-        <div className="flex items-center gap-2.5 flex-wrap">
+        {/* Global Action Toolbar */}
+        <div className="flex items-center gap-2.5 flex-wrap self-start lg:self-center">
           {/* Download Options */}
-          <div className="flex items-center rounded-lg border border-slate-300 bg-white shadow-xs overflow-hidden">
+          <div className="flex items-center rounded-xl border border-slate-300 bg-white shadow-xs overflow-hidden">
             <button
               type="button"
               onClick={handleDownloadExcelTemplate}
               className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 transition-colors cursor-pointer"
-              title="Download rich Excel workbook (.xlsx) with guidelines, data validation tabs, and master data references"
+              title="Download rich Excel workbook (.xlsx) with reference sheets"
             >
               <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-              <span>Download Excel Template (.xlsx)</span>
+              <span>Download Excel (.xlsx)</span>
             </button>
             <div className="h-5 w-px bg-slate-200"></div>
             <button
               type="button"
               onClick={handleDownloadCSVTemplate}
-              className="inline-flex items-center gap-1.5 px-2.5 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors cursor-pointer"
               title="Download standard CSV template (.csv)"
             >
               <Download className="w-3.5 h-3.5" />
@@ -655,20 +741,41 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
             </button>
           </div>
 
+          {/* Import Button */}
           <button
             type="button"
             onClick={() => {
               setIsImportModalOpen(true);
               setCsvError(null);
             }}
-            className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-xs transition-all cursor-pointer"
-            title="Import observations from Excel (.xlsx/.xls), CSV, or text file (.txt/.tsv) with automatic master data provisioning"
+            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs transition-all cursor-pointer"
+            title="Import observations from Excel (.xlsx/.xls), CSV, or text (.tsv/.txt)"
           >
             <Upload className="w-4 h-4" />
             <span>Import Data File</span>
           </button>
         </div>
       </header>
+
+      {/* Database Context Statistics Strip */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs text-xs">
+        <div className="px-3 py-1 border-r border-slate-100 last:border-none">
+          <span className="text-slate-500 block">Total Specimens</span>
+          <span className="text-base font-bold text-slate-800 font-mono">{totalSpecimens}</span>
+        </div>
+        <div className="px-3 py-1 border-r border-slate-100 last:border-none">
+          <span className="text-slate-500 block">Recorded Observations</span>
+          <span className="text-base font-bold text-emerald-700 font-mono">{totalObservations}</span>
+        </div>
+        <div className="px-3 py-1 border-r border-slate-100 last:border-none">
+          <span className="text-slate-500 block">Registered Crops</span>
+          <span className="text-base font-bold text-slate-800 font-mono">{totalCrops}</span>
+        </div>
+        <div className="px-3 py-1">
+          <span className="text-slate-500 block">Endophyte Species</span>
+          <span className="text-base font-bold text-purple-700 font-mono">{masterData.endophytes?.length || 0}</span>
+        </div>
+      </div>
 
       {/* Import Modal */}
       {isImportModalOpen && (
@@ -682,7 +789,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
                   <FileSpreadsheet className="w-6 h-6" />
                 </div>
                 <div>
-                  <h3 className="text-lg font-bold text-slate-800">Import Observations (Excel / CSV / Text)</h3>
+                  <h3 className="text-lg font-bold text-slate-800">Batch Import Observations & Specimens</h3>
                   <p className="text-xs text-slate-500">
                     Upload observation records from Excel (.xlsx/.xls), CSV (.csv), or delimited text files (.tsv/.txt). Novel items are auto-provisioned to Master Data.
                   </p>
@@ -707,7 +814,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
             {/* Modal Body */}
             <div className="p-6 overflow-y-auto space-y-5 flex-1">
               
-              {/* Informative Guidance Banner */}
+              {/* Guidance Card */}
               <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-4 text-xs text-emerald-950 flex items-start gap-3">
                 <Sparkles className="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" />
                 <div className="space-y-1">
@@ -715,7 +822,7 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
                     Smart Master Data Synchronization & Multi-Format Support
                   </div>
                   <p className="text-emerald-800 leading-relaxed">
-                    You can download an <strong>Excel workbook (.xlsx)</strong> with instructions and existing reference tables, edit it in Microsoft Excel, Google Sheets, or LibreOffice, and upload it directly as <strong>.xlsx, .csv, or .txt</strong>. Any new crops, endophytes, structures, or sequencing platforms are automatically created in Master Data!
+                    Download an <strong>Excel workbook (.xlsx)</strong> with instructions and existing reference tables, edit it in Microsoft Excel, Google Sheets, or LibreOffice, and upload it directly. Any new crops, endophytes, tissues, or sequencing platforms are automatically created in Master Data!
                   </p>
                   <div className="pt-2 flex items-center gap-3 flex-wrap">
                     <button
@@ -734,323 +841,116 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
                       <Download className="w-3.5 h-3.5 text-slate-500" />
                       Download CSV Template (.csv)
                     </button>
-                    <span className="text-slate-400 text-[11px]">Accepts .xlsx, .xls, .csv, .txt, .tsv</span>
                   </div>
                 </div>
               </div>
 
-              {/* Upload Drop Area */}
-              <div 
-                onClick={() => fileInputRef.current?.click()}
-                className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all ${
-                  csvFile 
-                    ? 'border-emerald-500 bg-emerald-50/40' 
-                    : 'border-slate-300 hover:border-emerald-500 hover:bg-slate-50'
-                }`}
-              >
+              {/* Upload Drop Zone */}
+              <div className="border-2 border-dashed border-slate-300 hover:border-emerald-500 rounded-2xl p-6 text-center bg-slate-50/50 hover:bg-emerald-50/20 transition-all cursor-pointer">
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".xlsx,.xls,.csv,.txt,.tsv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                  accept=".xlsx, .xls, .csv, .txt, .tsv, text/csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel"
                   onChange={handleFileChange}
                   className="hidden"
+                  id="data-file-upload-input"
                 />
-
-                <div className="flex flex-col items-center justify-center space-y-2">
-                  <div className="p-3 bg-slate-100 rounded-full text-slate-600 group-hover:scale-105 transition-transform">
-                    {csvFile?.name?.endsWith('.xlsx') || csvFile?.name?.endsWith('.xls') ? (
-                      <FileSpreadsheet className="w-6 h-6 text-emerald-600" />
-                    ) : csvFile?.name?.endsWith('.txt') ? (
-                      <FileText className="w-6 h-6 text-blue-600" />
-                    ) : (
-                      <Upload className="w-6 h-6 text-emerald-600" />
-                    )}
+                <label htmlFor="data-file-upload-input" className="cursor-pointer block space-y-2">
+                  <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto">
+                    <FileSpreadsheet className="w-6 h-6" />
                   </div>
-                  <div className="text-sm font-semibold text-slate-700">
-                    {csvFile ? csvFile.name : 'Click to select or drag and drop your Excel, CSV, or Text file'}
+                  <div className="text-sm font-semibold text-slate-800">
+                    {csvFile ? csvFile.name : 'Click to select or drag and drop your data file'}
                   </div>
-                  <p className="text-xs text-slate-400">
-                    {csvFile 
-                      ? `${(csvFile.size / 1024).toFixed(1)} KB • ${parsedRows.length} record(s) ready` 
-                      : 'Supports Excel (.xlsx, .xls), CSV (.csv), and Tab/Comma-delimited text (.txt, .tsv)'}
+                  <p className="text-xs text-slate-500">
+                    Supports Microsoft Excel (.xlsx, .xls), CSV (.csv), and Tab/Text tables (.txt, .tsv) up to 25MB
                   </p>
-                </div>
+                  {csvFile && (
+                    <div className="inline-flex items-center gap-1.5 text-xs text-emerald-700 font-medium bg-emerald-50 px-2.5 py-0.5 rounded-md border border-emerald-200 mt-2">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>{parsedRows.length} valid row(s) parsed</span>
+                    </div>
+                  )}
+                </label>
               </div>
 
-              {/* Error Alert */}
+              {/* Parsing Error Display */}
               {csvError && (
-                <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                  <span>{csvError}</span>
-                </div>
-              )}
-
-              {/* Success Result Alert */}
-              {importResult && (
-                <div className="p-4 bg-emerald-50 border border-emerald-300 rounded-xl text-emerald-900 text-xs flex items-center gap-3">
-                  <CheckCircle2 className="w-5 h-5 text-emerald-600 flex-shrink-0" />
+                <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                   <div>
-                    <div className="font-bold text-emerald-900">{importResult.message}</div>
-                    <div className="text-emerald-700 mt-0.5">
-                      Updated database state. Closing dialog...
-                    </div>
+                    <div className="font-semibold">Formatting Error</div>
+                    <div>{csvError}</div>
                   </div>
                 </div>
               )}
 
-              {/* Master Data Discovery & Preview when rows exist */}
+              {/* Preview table when rows exist */}
               {parsedRows.length > 0 && !importResult && (
                 <div className="space-y-4 pt-2">
-                  
-                  {/* Summary Bar of Detected Entities */}
                   <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2 text-xs font-bold text-slate-800 uppercase tracking-wider">
                         <Database className="w-4 h-4 text-emerald-600" />
-                        <span>Pre-Import Validation & Discovery</span>
+                        <span>Pre-Import Discovery Summary</span>
                       </div>
                       <span className="text-xs font-semibold px-2 py-0.5 bg-slate-200 text-slate-700 rounded-md">
-                        {parsedRows.length} Observation Row(s)
+                        {parsedRows.length} Row(s)
                       </span>
                     </div>
 
-                    {/* Chips for New Master Data Items */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 text-xs">
-                      
-                      {/* Crops */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
                       <div className="p-2.5 rounded-lg border border-slate-200 bg-white">
-                        <div className="flex items-center justify-between text-slate-500 mb-1">
-                          <span className="flex items-center gap-1.5 font-medium">
-                            <Leaf className="w-3.5 h-3.5 text-emerald-600" />
-                            Crops
-                          </span>
-                          {masterDataAnalysis.newCrops.length > 0 ? (
-                            <span className="bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.2 rounded text-[11px]">
-                              +{masterDataAnalysis.newCrops.length} New
-                            </span>
-                          ) : (
-                            <span className="text-slate-400 text-[11px]">All existing</span>
-                          )}
-                        </div>
-                        {masterDataAnalysis.newCrops.length > 0 && (
-                          <div className="text-[11px] text-emerald-700 font-medium truncate" title={masterDataAnalysis.newCrops.join(', ')}>
-                            {masterDataAnalysis.newCrops.join(', ')}
-                          </div>
-                        )}
+                        <span className="text-slate-500 block text-[11px]">New Crops</span>
+                        <span className="font-bold text-slate-800">+{masterDataAnalysis.newCrops.length} New</span>
                       </div>
-
-                      {/* Endophytes */}
                       <div className="p-2.5 rounded-lg border border-slate-200 bg-white">
-                        <div className="flex items-center justify-between text-slate-500 mb-1">
-                          <span className="flex items-center gap-1.5 font-medium">
-                            <Dna className="w-3.5 h-3.5 text-purple-600" />
-                            Endophytes
-                          </span>
-                          {masterDataAnalysis.newEndophytes.length > 0 ? (
-                            <span className="bg-purple-100 text-purple-800 font-bold px-1.5 py-0.2 rounded text-[11px]">
-                              +{masterDataAnalysis.newEndophytes.length} New
-                            </span>
-                          ) : (
-                            <span className="text-slate-400 text-[11px]">All existing</span>
-                          )}
-                        </div>
-                        {masterDataAnalysis.newEndophytes.length > 0 && (
-                          <div className="text-[11px] text-purple-700 font-medium truncate" title={masterDataAnalysis.newEndophytes.join(', ')}>
-                            {masterDataAnalysis.newEndophytes.join(', ')}
-                          </div>
-                        )}
+                        <span className="text-slate-500 block text-[11px]">New Endophytes</span>
+                        <span className="font-bold text-purple-700">+{masterDataAnalysis.newEndophytes.length} New</span>
                       </div>
-
-                      {/* Structures */}
                       <div className="p-2.5 rounded-lg border border-slate-200 bg-white">
-                        <div className="flex items-center justify-between text-slate-500 mb-1">
-                          <span className="flex items-center gap-1.5 font-medium">
-                            <Database className="w-3.5 h-3.5 text-blue-600" />
-                            Plant Tissues
-                          </span>
-                          {masterDataAnalysis.newStructures.length > 0 ? (
-                            <span className="bg-blue-100 text-blue-800 font-bold px-1.5 py-0.2 rounded text-[11px]">
-                              +{masterDataAnalysis.newStructures.length} New
-                            </span>
-                          ) : (
-                            <span className="text-slate-400 text-[11px]">All existing</span>
-                          )}
-                        </div>
-                        {masterDataAnalysis.newStructures.length > 0 && (
-                          <div className="text-[11px] text-blue-700 font-medium truncate" title={masterDataAnalysis.newStructures.join(', ')}>
-                            {masterDataAnalysis.newStructures.join(', ')}
-                          </div>
-                        )}
+                        <span className="text-slate-500 block text-[11px]">New Plant Tissues</span>
+                        <span className="font-bold text-blue-700">+{masterDataAnalysis.newStructures.length} New</span>
                       </div>
-
-                      {/* Sequencing Methods */}
-                      <div className="p-2.5 rounded-lg border border-slate-200 bg-white">
-                        <div className="flex items-center justify-between text-slate-500 mb-1">
-                          <span className="flex items-center gap-1.5 font-medium">
-                            <Binary className="w-3.5 h-3.5 text-indigo-600" />
-                            Sequencing
-                          </span>
-                          {masterDataAnalysis.newSeqMethods.length > 0 ? (
-                            <span className="bg-indigo-100 text-indigo-800 font-bold px-1.5 py-0.2 rounded text-[11px]">
-                              +{masterDataAnalysis.newSeqMethods.length} New
-                            </span>
-                          ) : (
-                            <span className="text-slate-400 text-[11px]">All existing</span>
-                          )}
-                        </div>
-                        {masterDataAnalysis.newSeqMethods.length > 0 && (
-                          <div className="text-[11px] text-indigo-700 font-medium truncate" title={masterDataAnalysis.newSeqMethods.join(', ')}>
-                            {masterDataAnalysis.newSeqMethods.join(', ')}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* References */}
-                      <div className="p-2.5 rounded-lg border border-slate-200 bg-white">
-                        <div className="flex items-center justify-between text-slate-500 mb-1">
-                          <span className="flex items-center gap-1.5 font-medium">
-                            <BookOpen className="w-3.5 h-3.5 text-amber-600" />
-                            References
-                          </span>
-                          {masterDataAnalysis.newReferences.length > 0 ? (
-                            <span className="bg-amber-100 text-amber-800 font-bold px-1.5 py-0.2 rounded text-[11px]">
-                              +{masterDataAnalysis.newReferences.length} New
-                            </span>
-                          ) : (
-                            <span className="text-slate-400 text-[11px]">All existing</span>
-                          )}
-                        </div>
-                        {masterDataAnalysis.newReferences.length > 0 && (
-                          <div className="text-[11px] text-amber-700 font-medium truncate" title={masterDataAnalysis.newReferences.join(', ')}>
-                            {masterDataAnalysis.newReferences.join(', ')}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Coordinates Validation */}
-                      <div className="p-2.5 rounded-lg border border-slate-200 bg-white">
-                        <div className="flex items-center justify-between text-slate-500 mb-1">
-                          <span className="font-medium">Georeferencing</span>
-                          {masterDataAnalysis.invalidCoordsCount > 0 ? (
-                            <span className="bg-amber-100 text-amber-800 font-bold px-1.5 py-0.2 rounded text-[11px]">
-                              {masterDataAnalysis.invalidCoordsCount} Missing/0,0
-                            </span>
-                          ) : (
-                            <span className="text-emerald-600 font-semibold text-[11px]">100% Valid</span>
-                          )}
-                        </div>
-                        <div className="text-[11px] text-slate-500">
-                          {masterDataAnalysis.invalidCoordsCount > 0 
-                            ? 'Will default coordinates to (0,0)' 
-                            : 'All coordinates within range'}
-                        </div>
-                      </div>
-
                     </div>
                   </div>
 
-                  {/* Table Preview */}
                   <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
-                    <div className="p-3 bg-slate-100 border-b border-slate-200 flex items-center justify-between text-xs font-semibold text-slate-700">
-                      <span>Records Preview (showing up to 10 rows)</span>
-                      <span className="text-slate-500">Green badges indicate entities auto-created into Master Data</span>
+                    <div className="p-2.5 bg-slate-100 border-b border-slate-200 text-xs font-semibold text-slate-700 flex justify-between">
+                      <span>Row Preview (first 5 records)</span>
+                      <span className="text-slate-400 font-normal">Auto-validating coordinates and taxonomy</span>
                     </div>
-
-                    <div className="overflow-x-auto max-h-64">
+                    <div className="overflow-x-auto max-h-48">
                       <table className="w-full text-left text-xs">
                         <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-medium">
                           <tr>
                             <th className="py-2 px-3">#</th>
+                            <th className="py-2 px-3">Specimen Voucher</th>
                             <th className="py-2 px-3">Host Crop</th>
                             <th className="py-2 px-3">Coords (Lat, Lng)</th>
-                            <th className="py-2 px-3">Structure</th>
+                            <th className="py-2 px-3">Tissue</th>
                             <th className="py-2 px-3">Endophyte Species</th>
                             <th className="py-2 px-3">Sequencing & Accession</th>
-                            <th className="py-2 px-3">Reference</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                          {parsedRows.slice(0, 10).map((row, idx) => {
-                            const cropName = row.crop_common_name || row.crop_name || row.common_name || row.crop || '-';
-                            const isNewCrop = masterDataAnalysis.newCrops.includes(cropName);
-
-                            const endoName = row.endophyte_scientific_name || row.endophyte_name || row.endophyte_species || row.endophyte || '-';
-                            const isNewEndo = masterDataAnalysis.newEndophytes.includes(endoName);
-
-                            const rawStruct = row.plant_structure || row.structure_name || row.tissue || '-';
-                            const seqMethod = row.sequencing_method || row.sequencing_technology || row.method_name || '';
-                            const isNewSeq = seqMethod && masterDataAnalysis.newSeqMethods.includes(seqMethod);
-
-                            const accession = row.ncbi_accession || row.accession || '';
-                            const refTitle = row.reference_title || row.article_title || row.reference || '';
-
-                            return (
-                              <tr key={idx} className="hover:bg-slate-50">
-                                <td className="py-2 px-3 text-slate-400 font-mono text-[11px]">{idx + 1}</td>
-                                
-                                <td className="py-2 px-3 font-medium text-slate-800">
-                                  <div className="flex items-center gap-1.5">
-                                    <span>{cropName}</span>
-                                    {isNewCrop && (
-                                      <span className="text-[10px] font-bold px-1.5 py-0.2 bg-emerald-100 text-emerald-800 rounded">
-                                        NEW CROP
-                                      </span>
-                                    )}
-                                  </div>
-                                </td>
-
-                                <td className="py-2 px-3 text-slate-600 font-mono text-[11px]">
-                                  {row.latitude && row.longitude 
-                                    ? `${parseFloat(row.latitude).toFixed(4)}, ${parseFloat(row.longitude).toFixed(4)}` 
-                                    : <span className="text-amber-500 italic">Not specified</span>}
-                                </td>
-
-                                <td className="py-2 px-3 text-slate-700">
-                                  {rawStruct}
-                                </td>
-
-                                <td className="py-2 px-3 italic text-slate-800">
-                                  <div className="flex items-center gap-1.5">
-                                    <span>{endoName}</span>
-                                    {isNewEndo && (
-                                      <span className="text-[10px] font-bold px-1.5 py-0.2 bg-purple-100 text-purple-800 rounded not-italic">
-                                        NEW SPECIES
-                                      </span>
-                                    )}
-                                  </div>
-                                </td>
-
-                                <td className="py-2 px-3">
-                                  <div className="space-y-0.5">
-                                    {seqMethod ? (
-                                      <div className="flex items-center gap-1">
-                                        <span className="text-slate-700">{seqMethod}</span>
-                                        {isNewSeq && (
-                                          <span className="text-[9px] font-bold px-1 bg-indigo-100 text-indigo-800 rounded">NEW</span>
-                                        )}
-                                      </div>
-                                    ) : (
-                                      <span className="text-slate-400 text-[11px]">—</span>
-                                    )}
-                                    {accession && (
-                                      <div className="font-mono text-[11px] text-emerald-700 font-semibold">
-                                        {accession}
-                                      </div>
-                                    )}
-                                  </div>
-                                </td>
-
-                                <td className="py-2 px-3 text-slate-600 max-w-[160px] truncate" title={refTitle}>
-                                  {refTitle || <span className="text-slate-400 text-[11px]">—</span>}
-                                </td>
-                              </tr>
-                            );
-                          })}
+                          {parsedRows.slice(0, 5).map((row, idx) => (
+                            <tr key={idx} className="hover:bg-slate-50">
+                              <td className="py-2 px-3 text-slate-400 font-mono text-[11px]">{idx + 1}</td>
+                              <td className="py-2 px-3 font-mono font-medium text-slate-700">{row.specimen_identifier || `AUTO`}</td>
+                              <td className="py-2 px-3 font-medium text-slate-800">{row.crop_common_name || row.crop_name || '-'}</td>
+                              <td className="py-2 px-3 text-slate-500 font-mono">{row.latitude}, {row.longitude}</td>
+                              <td className="py-2 px-3 text-slate-600">{row.plant_structure || '-'}</td>
+                              <td className="py-2 px-3 italic text-emerald-700 font-medium">{row.endophyte_scientific_name || '-'}</td>
+                              <td className="py-2 px-3 text-slate-500 font-mono text-[11px]">
+                                {row.sequencing_method || ''} {row.ncbi_accession ? `[${row.ncbi_accession}]` : ''}
+                              </td>
+                            </tr>
+                          ))}
                         </tbody>
                       </table>
                     </div>
                   </div>
-
                 </div>
               )}
 
@@ -1058,12 +958,9 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
 
             {/* Modal Footer */}
             <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
-              <div className="text-xs text-slate-500">
-                {parsedRows.length > 0 && (
-                  <span>Ready to import <strong>{parsedRows.length}</strong> observation record(s)</span>
-                )}
-              </div>
-
+              <span className="text-xs text-slate-500">
+                {parsedRows.length > 0 ? `Ready to process ${parsedRows.length} observation records` : 'Select an Excel, CSV, or text table to proceed'}
+              </span>
               <div className="flex items-center gap-3">
                 <button
                   type="button"
@@ -1072,13 +969,11 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
                     setCsvFile(null);
                     setParsedRows([]);
                     setCsvError(null);
-                    setImportResult(null);
                   }}
                   className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
-
                 <button
                   type="button"
                   disabled={parsedRows.length === 0 || isImporting || !!importResult}
@@ -1092,12 +987,12 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
                   {isImporting ? (
                     <>
                       <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>Importing & Provisioning Master Data...</span>
+                      <span>Importing...</span>
                     </>
                   ) : (
                     <>
                       <Upload className="w-4 h-4" />
-                      <span>Import {parsedRows.length > 0 ? `${parsedRows.length} Observations` : 'CSV'}</span>
+                      <span>Execute Import ({parsedRows.length})</span>
                     </>
                   )}
                 </button>
@@ -1108,208 +1003,599 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
         </div>
       )}
 
-      {/* Manual Observation Entry Form */}
-      <form onSubmit={handleSubmit} className="bg-white p-8 rounded-xl shadow-xs border border-slate-200 space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          
-          <div className="space-y-2">
-            <div className="flex justify-between items-center mb-1">
-               <label className="block text-sm font-medium text-slate-700">Host Crop Species *</label>
-               <button 
-                 type="button" 
-                 onClick={() => setIsNewCrop(!isNewCrop)} 
-                 className="text-sm font-medium text-emerald-600 hover:text-emerald-700 hover:underline cursor-pointer"
-               >
-                 {isNewCrop ? "- Select Existing" : "+ Add New Crop"}
-               </button>
+      {/* Main Data Entry Form */}
+      <form onSubmit={handleSubmit} className="space-y-8">
+        
+        {/* SECTION 1: PHYSICAL PLANT SPECIMEN & HOST IDENTIFIER */}
+        <section className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 sm:p-8 space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-100">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center justify-center font-bold text-sm">
+                1
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">
+                  Plant Specimen & Host Identity
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Assign a physical sample voucher identifier, select or register the host crop, and record the collector.
+                </p>
+              </div>
             </div>
 
-            {!isNewCrop ? (
-              <div>
-                <select 
-                  required
-                  value={formData.crop_species_id}
-                  onChange={(e) => setFormData({...formData, crop_species_id: e.target.value})}
-                  className="w-full rounded-lg border-slate-300 border p-2.5 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50"
-                >
-                  <option value="">Select a Crop</option>
-                  {masterData.crops?.map(c => (
-                    <option key={c.crop_species_id} value={c.crop_species_id}>
-                      {c.common_name} {c.plant_group && c.plant_group !== 'Unknown' ? `[${c.plant_group}]` : ''}
-                    </option>
-                  ))}
-                </select>
+            {/* Specimen Mode Switcher */}
+            <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 self-start sm:self-center">
+              <button
+                type="button"
+                onClick={() => {
+                  setSpecimenMode('new');
+                  setSelectedExistingSpecimenId('');
+                }}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                  specimenMode === 'new'
+                    ? 'bg-white text-emerald-800 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                + Register New Specimen
+              </button>
+              <button
+                type="button"
+                onClick={() => setSpecimenMode('existing')}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                  specimenMode === 'existing'
+                    ? 'bg-white text-emerald-800 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                🔗 Link Existing Specimen ({masterData.specimens?.length || 0})
+              </button>
+            </div>
+          </div>
+
+          {/* If Linking Existing Specimen */}
+          {specimenMode === 'existing' && (
+            <div className="p-4 bg-emerald-50/60 border border-emerald-200 rounded-xl space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold text-emerald-900 uppercase tracking-wide">
+                  Select Registered Specimen from Database *
+                </label>
+                <span className="text-[11px] text-emerald-700">Auto-fills coordinates and host crop</span>
               </div>
-            ) : (
-              <div className="space-y-4 p-4 border border-emerald-200 bg-emerald-50 rounded-lg">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Common Name *</label>
+              <select
+                value={selectedExistingSpecimenId}
+                onChange={(e) => handleSelectExistingSpecimen(e.target.value)}
+                required={specimenMode === 'existing'}
+                className="w-full rounded-xl border-slate-300 border bg-white p-2.5 text-sm font-medium focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600"
+              >
+                <option value="">-- Choose a previously registered plant specimen --</option>
+                {masterData.specimens?.map(spec => {
+                  const crop = masterData.crops?.find(c => c.crop_species_id === spec.crop_species_id);
+                  const obsCount = (masterData.observations || []).filter(o => o.plant_specimen_id === spec.plant_specimen_id).length;
+                  return (
+                    <option key={spec.plant_specimen_id} value={spec.plant_specimen_id}>
+                      {spec.specimen_identifier || `Specimen #${spec.plant_specimen_id}`} — {crop?.common_name || 'Crop'} (Lat: {spec.latitude}, Lng: {spec.longitude}) · [{obsCount} observation(s)]
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+          )}
+
+          {/* Specimen Identifier & Collector Fields */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            
+            {/* Field: Specimen Identifier / Voucher ID */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="block text-sm font-semibold text-slate-800">
+                  Specimen Voucher / Sample ID *
+                </label>
+                {specimenMode === 'new' && (
+                  <button
+                    type="button"
+                    onClick={handleGenerateSpecimenCode}
+                    className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <Sparkles className="w-3 h-3 text-emerald-600" />
+                    <span>Auto-Generate ID</span>
+                  </button>
+                )}
+              </div>
+              <div className="relative">
+                <Hash className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. ZM-2024-001, VOUCHER-ZA-42"
+                  value={formData.specimen_identifier}
+                  onChange={(e) => setFormData({ ...formData, specimen_identifier: e.target.value.toUpperCase() })}
+                  disabled={specimenMode === 'existing'}
+                  className={`w-full pl-10 pr-3.5 py-2.5 rounded-xl border text-sm font-mono transition-all ${
+                    specimenMode === 'existing'
+                      ? 'bg-slate-100 text-slate-600 border-slate-200 cursor-not-allowed'
+                      : 'border-slate-300 bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600'
+                  }`}
+                />
+              </div>
+              <p className="text-[11px] text-slate-400">
+                Unique identifier for the physical botanical voucher, field collection tag, or herbarium accession.
+              </p>
+            </div>
+
+            {/* Field: Recorded By / Researcher */}
+            <div className="space-y-1.5">
+              <label className="block text-sm font-semibold text-slate-800">
+                Collector / Recorded By
+              </label>
+              <div className="relative">
+                <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                <input
+                  type="text"
+                  placeholder="e.g. Dr. A. Smith, Researcher Admin"
+                  value={formData.created_by}
+                  onChange={(e) => setFormData({ ...formData, created_by: e.target.value })}
+                  className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600"
+                />
+              </div>
+              <p className="text-[11px] text-slate-400">
+                Primary investigator or collector associated with this plant sampling.
+              </p>
+            </div>
+
+            {/* Field: Host Crop Species Selection */}
+            <div className="space-y-2 md:col-span-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-sm font-semibold text-slate-800">
+                  Host Crop Species *
+                </label>
+                {specimenMode === 'new' && (
+                  <button 
+                    type="button" 
+                    onClick={() => setIsNewCrop(!isNewCrop)} 
+                    className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 hover:underline cursor-pointer"
+                  >
+                    {isNewCrop ? "- Select From Existing Crops" : "+ Add New Host Crop"}
+                  </button>
+                )}
+              </div>
+
+              {!isNewCrop ? (
+                <div className="relative">
+                  <select 
+                    required
+                    disabled={specimenMode === 'existing'}
+                    value={formData.crop_species_id}
+                    onChange={(e) => setFormData({ ...formData, crop_species_id: e.target.value })}
+                    className={`w-full rounded-xl border p-2.5 text-sm transition-all ${
+                      specimenMode === 'existing'
+                        ? 'bg-slate-100 text-slate-600 border-slate-200 cursor-not-allowed'
+                        : 'border-slate-300 bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600'
+                    }`}
+                  >
+                    <option value="">-- Choose Host Crop Species --</option>
+                    {masterData.crops?.map(c => (
+                      <option key={c.crop_species_id} value={c.crop_species_id}>
+                        {c.common_name} {c.scientific_name ? `(${c.scientific_name})` : ''} · {c.plant_group || 'Plant'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div className="p-4 border border-emerald-200 bg-emerald-50/60 rounded-xl space-y-3.5 animate-in fade-in duration-150">
+                  <div className="text-xs font-bold text-emerald-900 uppercase tracking-wide">
+                    Register New Host Crop Species
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">Common Name *</label>
+                      <input 
+                        type="text" required={isNewCrop} placeholder="e.g. Quinoa, Sorghum"
+                        value={formData.new_crop_name} 
+                        onChange={(e) => setFormData({ ...formData, new_crop_name: e.target.value })}
+                        className="w-full rounded-lg border-slate-300 border p-2 text-xs bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">Scientific Name (Optional)</label>
+                      <input 
+                        type="text" placeholder="e.g. Chenopodium quinoa"
+                        value={formData.new_crop_scientific} 
+                        onChange={(e) => setFormData({ ...formData, new_crop_scientific: e.target.value })}
+                        className="w-full rounded-lg border-slate-300 border p-2 text-xs bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600 italic"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">Botanical Clade *</label>
+                      <select 
+                        required={isNewCrop}
+                        value={formData.new_crop_group} 
+                        onChange={(e) => setFormData({ ...formData, new_crop_group: e.target.value })}
+                        className="w-full rounded-lg border-slate-300 border p-2 text-xs bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600"
+                      >
+                        <option value="">Select Clade...</option>
+                        <option value="Monocot">Monocot</option>
+                        <option value="Dicot">Dicot</option>
+                        <option value="Other">Other</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+          </div>
+        </section>
+
+        {/* SECTION 2: GEOGRAPHIC LOCALIZATION & SAMPLING SITE */}
+        <section className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 sm:p-8 space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-100">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center justify-center font-bold text-sm">
+                2
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">
+                  Sampling Location & Field Coordinates
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Select coordinates interactively on the global map, query your device GPS, or convert DMS strings.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleUseCurrentLocation}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors cursor-pointer"
+                title="Detect current location via browser GPS"
+              >
+                <Crosshair className="w-3.5 h-3.5 text-emerald-700" />
+                <span>Use Current GPS</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            
+            {/* Left Column: Coordinate Inputs & Converters (5 cols) */}
+            <div className="lg:col-span-5 space-y-4">
+              
+              {/* Decimal Inputs */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="block text-xs font-semibold text-slate-700">Latitude (Decimal) *</label>
                   <input 
-                    type="text" required={isNewCrop} placeholder="e.g. Maize"
-                    value={formData.new_crop_name} 
-                    onChange={(e) => setFormData({...formData, new_crop_name: e.target.value})}
-                    className="w-full rounded-lg border-slate-300 border p-2.5 bg-white focus:ring-emerald-500 focus:border-emerald-500"
+                    type="number" 
+                    step="any" 
+                    required 
+                    placeholder="-33.9248"
+                    value={formData.latitude}
+                    onChange={(e) => setFormData({ ...formData, latitude: e.target.value })}
+                    disabled={specimenMode === 'existing'}
+                    className={`w-full rounded-xl border p-2.5 text-sm font-mono ${
+                      specimenMode === 'existing'
+                        ? 'bg-slate-100 text-slate-500 border-slate-200 cursor-not-allowed'
+                        : 'border-slate-300 bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600'
+                    }`}
                   />
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Scientific Name</label>
-                    <input 
-                      type="text" placeholder="Zea mays"
-                      value={formData.new_crop_scientific} 
-                      onChange={(e) => setFormData({...formData, new_crop_scientific: e.target.value})}
-                      className="w-full rounded-lg border-slate-300 border p-2.5 bg-white focus:ring-emerald-500 focus:border-emerald-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Plant Clade *</label>
-                    <select 
-                      required={isNewCrop}
-                      value={formData.new_crop_group} 
-                      onChange={(e) => setFormData({...formData, new_crop_group: e.target.value})}
-                      className="w-full rounded-lg border-slate-300 border p-2.5 bg-white focus:ring-emerald-500 focus:border-emerald-500"
-                    >
-                      <option value="">Select...</option>
-                      <option value="Monocot">Monocot</option>
-                      <option value="Dicot">Dicot</option>
-                      <option value="Other">Other</option>
-                    </select>
-                  </div>
+                <div className="space-y-1">
+                  <label className="block text-xs font-semibold text-slate-700">Longitude (Decimal) *</label>
+                  <input 
+                    type="number" 
+                    step="any" 
+                    required 
+                    placeholder="18.4240"
+                    value={formData.longitude}
+                    onChange={(e) => setFormData({ ...formData, longitude: e.target.value })}
+                    disabled={specimenMode === 'existing'}
+                    className={`w-full rounded-xl border p-2.5 text-sm font-mono ${
+                      specimenMode === 'existing'
+                        ? 'bg-slate-100 text-slate-500 border-slate-200 cursor-not-allowed'
+                        : 'border-slate-300 bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600'
+                    }`}
+                  />
                 </div>
+              </div>
+
+              {/* DMS Converter Box */}
+              {specimenMode === 'new' && (
+                <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/70 space-y-2">
+                  <div className="flex items-center justify-between text-xs font-semibold text-slate-700">
+                    <span className="flex items-center gap-1.5">
+                      <Compass className="w-3.5 h-3.5 text-slate-500" />
+                      Paste DMS from Literature / PDF
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input 
+                      type="text" 
+                      placeholder={`e.g. 33°55'12"S 18°25'10"E`}
+                      value={pastedCoordinates}
+                      onChange={(e) => setPastedCoordinates(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleConvertPastedCoords();
+                        }
+                      }}
+                      className="flex-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleConvertPastedCoords}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                    >
+                      Convert
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    Converts Degrees-Minutes-Seconds with N/S/E/W automatically into decimal format.
+                  </p>
+                </div>
+              )}
+
+              {/* Estimate Checkbox */}
+              <div className="pt-1">
+                <label className="flex items-start cursor-pointer group select-none">
+                  <input 
+                    type="checkbox" 
+                    checked={formData.location_estimated}
+                    onChange={(e) => setFormData({ ...formData, location_estimated: e.target.checked })}
+                    disabled={specimenMode === 'existing'}
+                    className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 mt-0.5 cursor-pointer"
+                  />
+                  <div className="ml-2.5 text-xs text-slate-600 group-hover:text-slate-800">
+                    <span className="font-semibold text-slate-700 block">Location is approximate / estimated</span>
+                    <span className="text-slate-400">Mark if exact field GPS coordinates were not provided in the original study.</span>
+                  </div>
+                </label>
+              </div>
+
+            </div>
+
+            {/* Right Column: Interactive Leaflet Map (7 cols) */}
+            <div className="lg:col-span-7">
+              <div className="rounded-xl overflow-hidden border border-slate-300 shadow-2xs relative z-0 h-64 sm:h-72 w-full">
+                <MapContainer 
+                  center={[
+                    formData.latitude && !isNaN(parseFloat(formData.latitude)) ? parseFloat(formData.latitude) : 20, 
+                    formData.longitude && !isNaN(parseFloat(formData.longitude)) ? parseFloat(formData.longitude) : 0
+                  ]} 
+                  zoom={formData.latitude ? 4 : 2} 
+                  scrollWheelZoom={true} 
+                  className="h-full w-full relative z-0"
+                >
+                  <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                  
+                  {specimenMode === 'new' && (
+                    <MapClickHandler 
+                      onLocationSelect={(lat, lng) => {
+                        setFormData(prev => ({ ...prev, latitude: lat, longitude: lng }));
+                      }} 
+                    />
+                  )}
+                  
+                  {formData.latitude && formData.longitude && !isNaN(parseFloat(formData.latitude)) && !isNaN(parseFloat(formData.longitude)) && (
+                    <>
+                      <MapRecenter lat={formData.latitude} lng={formData.longitude} />
+                      <Marker position={[parseFloat(formData.latitude), parseFloat(formData.longitude)]}>
+                        <Popup>
+                          <div className="p-1 text-xs">
+                            <strong className="block font-semibold text-emerald-800">
+                              {formData.specimen_identifier || 'Sampling Location'}
+                            </strong>
+                            <span className="text-slate-600">
+                              {activeCrop?.common_name || 'Plant Voucher'}
+                            </span>
+                            <div className="text-[11px] text-slate-400 font-mono mt-1">
+                              {formData.latitude}, {formData.longitude}
+                            </div>
+                          </div>
+                        </Popup>
+                      </Marker>
+                    </>
+                  )}
+                </MapContainer>
+                
+                <div className="absolute bottom-2 left-2 z-1000 bg-white/90 backdrop-blur-xs px-2.5 py-1 rounded-md text-[11px] font-medium text-slate-700 border border-slate-200 shadow-xs">
+                  {specimenMode === 'new' ? 'Click anywhere on map to pin sampling coordinates' : 'Specimen coordinates pinned'}
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </section>
+
+        {/* SECTION 3: PLANT ANATOMY & TISSUE LOCALIZATION */}
+        <section className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 sm:p-8 space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-100">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center justify-center font-bold text-sm">
+                3
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">
+                  Plant Anatomy & Tissue Localization *
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Select which anatomical plant compartments were sampled for endophyte isolation. Multiple allowed.
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setIsAddingStructure(!isAddingStructure)}
+              className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 hover:underline flex items-center gap-1 cursor-pointer self-start sm:self-center"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>{isAddingStructure ? 'Close Add Tissue' : '+ Add New Tissue'}</span>
+            </button>
+          </div>
+
+          {/* Inline Add Structure Form */}
+          {isAddingStructure && (
+            <div className="p-3.5 bg-emerald-50/70 border border-emerald-200 rounded-xl flex items-center gap-2.5 max-w-md animate-in fade-in duration-150">
+              <input
+                type="text"
+                placeholder="Tissue name (e.g. Flower, Bark, Petiole, Nodule)"
+                value={newStructureName}
+                onChange={(e) => setNewStructureName(e.target.value)}
+                className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600"
+              />
+              <button
+                type="button"
+                onClick={handleCreateNewStructure}
+                className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+              >
+                Add Tissue
+              </button>
+            </div>
+          )}
+
+          {/* Interactive Structure Chips Grid */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-3">
+            {masterData.structures?.map(s => {
+              const isSelected = formData.plant_structure_ids.includes(s.plant_structure_id.toString());
+              return (
+                <button
+                  type="button"
+                  key={s.plant_structure_id}
+                  onClick={() => handleStructureToggle(s.plant_structure_id.toString())}
+                  className={`p-3 rounded-xl border text-left transition-all flex flex-col justify-between cursor-pointer group ${
+                    isSelected
+                      ? 'bg-emerald-50/90 border-emerald-500 shadow-xs'
+                      : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <Leaf className={`w-4 h-4 ${isSelected ? 'text-emerald-700' : 'text-slate-400'}`} />
+                    <div className={`w-4 h-4 rounded-full flex items-center justify-center border ${
+                      isSelected ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-slate-300 bg-white'
+                    }`}>
+                      {isSelected && <Check className="w-2.5 h-2.5" />}
+                    </div>
+                  </div>
+                  <span className={`text-xs font-semibold ${isSelected ? 'text-emerald-950 font-bold' : 'text-slate-700'}`}>
+                    {s.name}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="text-xs text-slate-500 flex items-center gap-2">
+            <span className="font-semibold text-slate-700">Selected Tissues:</span>
+            <span>{formData.plant_structure_ids.length} tissue compartment(s) selected</span>
+          </div>
+        </section>
+
+        {/* SECTION 4: ENDOPHYTIC MICROORGANISMS */}
+        <section className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 sm:p-8 space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-100">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-purple-50 text-purple-700 border border-purple-200 flex items-center justify-center font-bold text-sm">
+                4
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">
+                  Isolated Endophytic Microorganisms *
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Identify and check symbiotic fungi, bacteria, or actinomycetes isolated from this plant sample.
+                </p>
+              </div>
+            </div>
+
+            <button 
+              type="button" 
+              onClick={() => setIsNewEndophyte(!isNewEndophyte)} 
+              className="text-xs font-semibold text-purple-700 hover:text-purple-800 hover:underline flex items-center gap-1 cursor-pointer self-start sm:self-center"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>{isNewEndophyte ? '- Cancel Adding Unlisted' : '+ Add Unlisted Endophyte'}</span>
+            </button>
+          </div>
+
+          {/* Search Bar for Endophytes */}
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-3.5 top-3 text-slate-400" />
+            <input 
+              type="text" 
+              placeholder="Search endophyte species by scientific name (e.g. Fusarium, Bacillus, Streptomyces)..." 
+              value={endoSearch} 
+              onChange={(e) => setEndoSearch(e.target.value)}
+              className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-purple-500/20 focus:border-purple-600 bg-white"
+            />
+          </div>
+
+          {/* Endophyte Selection Grid */}
+          <div className="h-44 overflow-y-auto bg-slate-50/50 border border-slate-200 rounded-xl p-3 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+            {filteredEndophytes.length > 0 ? filteredEndophytes.map(e => {
+              const isChecked = formData.endophyte_ids.includes(e.endophyte_id.toString());
+              const type = masterData.endophyteTypes?.find(t => t.endophyte_type_id === e.endophyte_type_id);
+              return (
+                <label 
+                  key={e.endophyte_id} 
+                  className={`flex items-center justify-between p-2.5 rounded-lg border cursor-pointer transition-colors ${
+                    isChecked 
+                      ? 'bg-purple-50 border-purple-400 shadow-2xs' 
+                      : 'bg-white border-slate-200 hover:bg-slate-100/60'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <input 
+                      type="checkbox" 
+                      className="w-4 h-4 text-purple-600 rounded border-slate-300 focus:ring-purple-500 cursor-pointer"
+                      checked={isChecked}
+                      onChange={() => handleEndophyteToggle(e.endophyte_id.toString())}
+                    />
+                    <span className="text-xs font-semibold italic text-slate-800 truncate" title={e.scientific_name}>
+                      {e.scientific_name}
+                    </span>
+                  </div>
+                  {type && (
+                    <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded ml-2 flex-shrink-0">
+                      {type.type_name}
+                    </span>
+                  )}
+                </label>
+              );
+            }) : (
+              <div className="col-span-full py-8 text-center text-xs text-slate-400">
+                No matching endophytes found. Use "+ Add Unlisted Endophyte" above to register a new species!
               </div>
             )}
           </div>
 
-          <div className="space-y-3 bg-slate-50 p-4 rounded-lg border border-slate-200 md:row-span-2">
-            <label className="block text-sm font-medium text-slate-700">
-              Location Setup *
-            </label>
-            
-            <div className="mb-2">
-              <input 
-                type="text" 
-                placeholder={`Paste from PDF (e.g. 33°55'12"S) and press Enter`}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    const { lat, lng } = parseCoordinates(e.target.value);
-                    if (lat && lng) {
-                       setFormData(prev => ({...prev, latitude: lat, longitude: lng}));
-                       notify('Coordinates converted!', 'success');
-                    } else {
-                       notify('Format not recognized.', 'error');
-                    }
-                  }
-                }}
-                className="w-full rounded-lg border-emerald-300 border-dashed border-2 p-2.5 focus:ring-emerald-500 focus:border-emerald-500 bg-emerald-50/50 text-sm placeholder-slate-400"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs text-slate-500 mb-1">Latitude (Decimal)</label>
-                <input 
-                  type="number" step="any" required placeholder="-33.9248"
-                  value={formData.latitude}
-                  onChange={(e) => setFormData({...formData, latitude: e.target.value})}
-                  className="w-full rounded border-slate-300 border p-2 focus:ring-emerald-500 focus:border-emerald-500 bg-white"
-                />
+          {/* Inline Add Unlisted Endophyte */}
+          {isNewEndophyte && (
+            <div className="p-4 border border-purple-200 bg-purple-50/60 rounded-xl space-y-3.5 animate-in fade-in duration-150">
+              <div className="text-xs font-bold text-purple-950 uppercase tracking-wide">
+                Register New Unlisted Endophyte Species
               </div>
-              <div>
-                <label className="block text-xs text-slate-500 mb-1">Longitude (Decimal)</label>
-                <input 
-                  type="number" step="any" required placeholder="18.4240"
-                  value={formData.longitude}
-                  onChange={(e) => setFormData({...formData, longitude: e.target.value})}
-                  className="w-full rounded border-slate-300 border p-2 focus:ring-emerald-500 focus:border-emerald-500 bg-white"
-                />
-              </div>
-            </div>
-            <div className="pt-2">
-              <label className="flex items-center cursor-pointer group">
-                <input 
-                  type="checkbox" 
-                  checked={formData.location_estimated}
-                  onChange={(e) => setFormData({...formData, location_estimated: e.target.checked})}
-                  className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer"
-                />
-                <span className="ml-2 text-sm text-slate-600 group-hover:text-slate-800 transition-colors">
-                  This location is an estimate <span className="text-slate-400 italic">(exact coordinates not provided in article)</span>
-                </span>
-              </label>
-            </div>
-
-            <div className="mt-4">
-              <label className="block text-xs text-slate-500 mb-1">Click the map to set location:</label>
-              <div className="h-56 w-full rounded-lg overflow-hidden border border-slate-300 relative z-0">
-                <MapContainer center={[20, 0]} zoom={1} scrollWheelZoom={true} className="h-full w-full relative z-0">
-                  <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                  <MapClickHandler setFormData={setFormData} />
-                  {formData.latitude && formData.longitude && !isNaN(parseFloat(formData.latitude)) && !isNaN(parseFloat(formData.longitude)) && (
-                    <Marker position={[parseFloat(formData.latitude), parseFloat(formData.longitude)]} />
-                  )}
-                </MapContainer>
-              </div>
-            </div>
-          </div>
-          
-          {/* Multi-select Endophytes UI */}
-          <div className="space-y-3 bg-slate-50 p-4 rounded-lg border border-slate-200">
-            <div className="flex justify-between items-center mb-1">
-               <label className="block text-sm font-medium text-slate-700">Select Endophytes (Multiple) *</label>
-            </div>
-            
-            <div className="relative">
-              <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
-              <input 
-                type="text" placeholder="Search unlisted endophytes..." 
-                value={endoSearch} onChange={(e) => setEndoSearch(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-300 text-sm focus:ring-emerald-500 focus:border-emerald-500 bg-white"
-              />
-            </div>
-
-            {/* Scrollable Checkbox List for Endophytes */}
-            <div className="h-32 overflow-y-auto bg-white border border-slate-300 rounded-lg p-2 space-y-1">
-              {filteredEndophytes.length > 0 ? filteredEndophytes.map(e => (
-                <label key={e.endophyte_id} className="flex items-center p-2 hover:bg-slate-50 rounded cursor-pointer">
-                  <input 
-                    type="checkbox" 
-                    className="w-4 h-4 text-emerald-600 rounded border-slate-300 mr-3"
-                    checked={formData.endophyte_ids.includes(e.endophyte_id.toString())}
-                    onChange={() => handleEndophyteToggle(e.endophyte_id.toString())}
-                  />
-                  <span className="text-sm text-slate-700">{e.scientific_name}</span>
-                </label>
-              )) : (
-                <p className="text-xs text-slate-400 text-center py-4">No matching endophytes found.</p>
-              )}
-            </div>
-
-            <div className="pt-2 border-t border-slate-200">
-               <button 
-                 type="button" onClick={() => setIsNewEndophyte(!isNewEndophyte)} 
-                 className="text-sm font-medium text-emerald-600 hover:text-emerald-700 cursor-pointer"
-               >
-                 {isNewEndophyte ? "- Cancel Adding New" : "+ Add a New Unlisted Endophyte"}
-               </button>
-            </div>
-
-            {isNewEndophyte && (
-              <div className="space-y-4 p-4 border border-emerald-200 bg-emerald-50 rounded-lg mt-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">Scientific Name *</label>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Scientific Binomial Name *</label>
                   <input 
-                    type="text" required={isNewEndophyte} placeholder="e.g. Aspergillus niger"
-                    value={formData.new_endophyte_name} onChange={(e) => setFormData({...formData, new_endophyte_name: e.target.value})}
-                    className="w-full rounded border-slate-300 border p-2 text-sm focus:ring-emerald-500 focus:border-emerald-500 bg-white"
+                    type="text" 
+                    required={isNewEndophyte} 
+                    placeholder="e.g. Trichoderma harzianum"
+                    value={formData.new_endophyte_name} 
+                    onChange={(e) => setFormData({ ...formData, new_endophyte_name: e.target.value })}
+                    className="w-full rounded-lg border-slate-300 border p-2 text-xs bg-white italic focus:ring-2 focus:ring-purple-500/20 focus:border-purple-600"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">Taxonomic Type *</label>
                   <select 
-                    required={isNewEndophyte} value={formData.new_endophyte_type_id}
-                    onChange={(e) => setFormData({...formData, new_endophyte_type_id: e.target.value})}
-                    className="w-full rounded border-slate-300 border p-2 text-sm focus:ring-emerald-500 focus:border-emerald-500 bg-white"
+                    required={isNewEndophyte} 
+                    value={formData.new_endophyte_type_id}
+                    onChange={(e) => setFormData({ ...formData, new_endophyte_type_id: e.target.value })}
+                    className="w-full rounded-lg border-slate-300 border p-2 text-xs bg-white focus:ring-2 focus:ring-purple-500/20 focus:border-purple-600"
                   >
                     <option value="">Select Category...</option>
                     {masterData.endophyteTypes?.map(t => (
@@ -1318,216 +1604,322 @@ const CaptureScreen = ({ masterData, notify, refreshData }) => {
                   </select>
                 </div>
               </div>
+            </div>
+          )}
+
+          <div className="text-xs text-slate-500 flex items-center justify-between">
+            <span>{formData.endophyte_ids.length} endophyte species checked</span>
+            {isNewEndophyte && formData.new_endophyte_name && (
+              <span className="text-purple-700 font-semibold">+ 1 new unlisted species will be created</span>
             )}
           </div>
+        </section>
 
-          <div className="space-y-2 md:col-span-2 bg-slate-50 p-4 rounded-lg border border-slate-200">
-            <label className="block text-sm font-medium text-slate-700 mb-3 flex items-center">
-              <CheckSquare className="w-4 h-4 mr-2 text-emerald-600" />
-              Select Plant Structures (Multiple allowed) *
-            </label>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-              {masterData.structures?.map(s => (
-                <label 
-                  key={s.plant_structure_id} 
-                  className={`flex items-center p-3 rounded-lg border cursor-pointer transition-colors ${
-                    formData.plant_structure_ids.includes(s.plant_structure_id.toString()) 
-                    ? 'bg-emerald-50 border-emerald-500 shadow-xs' 
-                    : 'bg-white border-slate-300 hover:bg-slate-100'
-                  }`}
-                >
-                  <input 
-                    type="checkbox" 
-                    className="w-4 h-4 text-emerald-600 focus:ring-emerald-500 rounded border-slate-300 mr-2"
-                    checked={formData.plant_structure_ids.includes(s.plant_structure_id.toString())}
-                    onChange={() => handleStructureToggle(s.plant_structure_id.toString())}
-                  />
-                  <span className="text-sm font-medium text-slate-700 select-none">{s.name}</span>
-                </label>
-              ))}
-            </div>
-            {(!masterData.structures || masterData.structures.length === 0) && (
-              <p className="text-sm text-slate-500 italic">No structures found. Add some in Master Data first!</p>
-            )}
-          </div>
-
-          <div className="space-y-2">
-            <label className="block text-sm font-medium text-slate-700">Observation Date *</label>
-            <input 
-              type="date" required
-              value={formData.observation_date}
-              onChange={(e) => setFormData({...formData, observation_date: e.target.value})}
-              className="w-full rounded-lg border-slate-300 border p-2.5 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50"
-            />
-          </div>
-
-          {/* Genomic & Sequencing Data Section */}
-          <div className="space-y-4 md:col-span-2 bg-slate-50 p-5 rounded-xl border border-slate-200">
-            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-              <div className="flex items-center space-x-2">
-                <Dna className="w-5 h-5 text-emerald-600" />
-                <h3 className="text-sm font-semibold text-slate-800">Genomic & Sequencing Data</h3>
+        {/* SECTION 5: MOLECULAR & SEQUENCING EVIDENCE */}
+        <section className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 sm:p-8 space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-100">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center justify-center font-bold text-sm">
+                5
               </div>
-              <span className="text-xs text-slate-400">Taxonomic & molecular evidence</span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 pt-1">
-              {/* Field 1: Sequencing Method */}
-              <div className="space-y-2">
-                <div className="flex justify-between items-center mb-1">
-                  <label className="block text-sm font-medium text-slate-700">Sequencing Method</label>
-                  <button 
-                    type="button" 
-                    onClick={() => setIsNewSequencingMethod(!isNewSequencingMethod)} 
-                    className="text-xs font-medium text-emerald-600 hover:text-emerald-700 hover:underline cursor-pointer"
-                  >
-                    {isNewSequencingMethod ? "Select Existing" : "+ Add New Method"}
-                  </button>
-                </div>
-
-                {!isNewSequencingMethod ? (
-                  <select 
-                    value={formData.sequencing_method_id}
-                    onChange={(e) => setFormData({...formData, sequencing_method_id: e.target.value})}
-                    className="w-full rounded-lg border-slate-300 border p-2.5 focus:ring-emerald-500 focus:border-emerald-500 bg-white text-sm"
-                  >
-                    <option value="">Select Sequencing Type...</option>
-                    {masterData.sequencingMethods?.map(s => (
-                      <option key={s.sequencing_method_id} value={s.sequencing_method_id}>
-                        {s.method_name} {s.platform_type ? `(${s.platform_type})` : ''}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <div className="space-y-3 p-3.5 border border-emerald-200 bg-emerald-50/70 rounded-lg">
-                    <div>
-                      <label className="block text-xs font-medium text-slate-700 mb-1">Method Name *</label>
-                      <input 
-                        type="text" 
-                        required={isNewSequencingMethod}
-                        placeholder="e.g. Sanger, NGS - WGS, Amplicon 16S"
-                        value={formData.new_sequencing_name}
-                        onChange={(e) => setFormData({...formData, new_sequencing_name: e.target.value})}
-                        className="w-full rounded border-slate-300 border p-2 text-xs focus:ring-emerald-500 focus:border-emerald-500 bg-white"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-700 mb-1">Platform / Instrument (Optional)</label>
-                      <input 
-                        type="text" 
-                        placeholder="e.g. Illumina MiSeq, Oxford Nanopore MinION"
-                        value={formData.new_sequencing_platform}
-                        onChange={(e) => setFormData({...formData, new_sequencing_platform: e.target.value})}
-                        className="w-full rounded border-slate-300 border p-2 text-xs focus:ring-emerald-500 focus:border-emerald-500 bg-white"
-                      />
-                    </div>
-                  </div>
-                )}
-                <p className="text-xs text-slate-400">Specifies Sanger, NGS WGS, amplicon metabarcoding, or long-read technology.</p>
-              </div>
-
-              {/* Field 2: NCBI Accession Number */}
-              <div className="space-y-2">
-                <div className="flex justify-between items-center mb-1">
-                  <label className="block text-sm font-medium text-slate-700">NCBI Accession Number</label>
-                  {formData.ncbi_accession && (
-                    <a
-                      href={`https://www.ncbi.nlm.nih.gov/search/all/?term=${encodeURIComponent(formData.ncbi_accession.trim())}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 hover:underline flex items-center gap-1"
-                      title="Open accession on NCBI database"
-                    >
-                      <span>Verify on NCBI</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  )}
-                </div>
-
-                <div>
-                  <input 
-                    type="text" 
-                    placeholder="e.g. OQ542198, PRJNA912834, SRR21894012"
-                    value={formData.ncbi_accession}
-                    onChange={(e) => setFormData({...formData, ncbi_accession: e.target.value.toUpperCase()})}
-                    className="w-full rounded-lg border-slate-300 border p-2.5 focus:ring-emerald-500 focus:border-emerald-500 bg-white text-sm font-mono"
-                  />
-                </div>
-                <p className="text-xs text-slate-400">
-                  GenBank, SRA, BioProject, or BioSample accession assigned by NCBI to your sample.
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">
+                  Genomic & Molecular Sequencing Evidence
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Specify the sequencing technology utilized and verify NCBI accession identifiers.
                 </p>
               </div>
             </div>
+
+            <div className="flex items-center gap-2">
+              <button 
+                type="button" 
+                onClick={() => setIsNewSequencingMethod(!isNewSequencingMethod)} 
+                className="text-xs font-semibold text-indigo-700 hover:text-indigo-800 hover:underline flex items-center gap-1 cursor-pointer self-start sm:self-center"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>{isNewSequencingMethod ? "Select Existing Method" : "+ Add New Sequencing Method"}</span>
+              </button>
+            </div>
           </div>
 
-           <div className="space-y-2 md:col-span-2">
-            <div className="flex justify-between items-center mb-1">
-               <label className="block text-sm font-medium text-slate-700">Literature Reference (Optional)</label>
-               <button 
-                 type="button" 
-                 onClick={() => setIsNewReference(!isNewReference)} 
-                 className="text-sm font-medium text-emerald-600 hover:text-emerald-700 hover:underline cursor-pointer"
-               >
-                 {isNewReference ? "Select Existing Reference" : "+ Add New Reference"}
-               </button>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            
+            {/* Field: Sequencing Method */}
+            <div className="space-y-2">
+              <label className="block text-sm font-semibold text-slate-800">
+                Sequencing Technology / Method
+              </label>
+
+              {!isNewSequencingMethod ? (
+                <select 
+                  value={formData.sequencing_method_id}
+                  onChange={(e) => setFormData({ ...formData, sequencing_method_id: e.target.value })}
+                  className="w-full rounded-xl border-slate-300 border p-2.5 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 bg-white text-sm"
+                >
+                  <option value="">-- Select Sequencing Method --</option>
+                  {masterData.sequencingMethods?.map(s => (
+                    <option key={s.sequencing_method_id} value={s.sequencing_method_id}>
+                      {s.method_name} {s.platform_type ? `[${s.platform_type}]` : ''}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="space-y-3 p-3.5 border border-indigo-200 bg-indigo-50/70 rounded-xl">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">Method Name *</label>
+                    <input 
+                      type="text" 
+                      required={isNewSequencingMethod}
+                      placeholder="e.g. Sanger Sequencing, NGS - WGS, Amplicon 16S"
+                      value={formData.new_sequencing_name}
+                      onChange={(e) => setFormData({ ...formData, new_sequencing_name: e.target.value })}
+                      className="w-full rounded-lg border-slate-300 border p-2 text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">Platform / Instrument (Optional)</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. Illumina MiSeq, Oxford Nanopore MinION, PacBio Sequel"
+                      value={formData.new_sequencing_platform}
+                      onChange={(e) => setFormData({ ...formData, new_sequencing_platform: e.target.value })}
+                      className="w-full rounded-lg border-slate-300 border p-2 text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 bg-white"
+                    />
+                  </div>
+                </div>
+              )}
+              <p className="text-[11px] text-slate-400">
+                Identifies Sanger, whole genome (WGS), metabarcoding amplicons, or long-read platforms.
+              </p>
             </div>
 
-            {!isNewReference ? (
-              <select 
-                value={formData.reference_id}
-                onChange={(e) => setFormData({...formData, reference_id: e.target.value})}
-                className="w-full rounded-lg border-slate-300 border p-2.5 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50"
-              >
-                <option value="">None</option>
-                {masterData.references?.map(r => (
-                  <option key={r.reference_id} value={r.reference_id}>
-                    {r.title} {r.publication_year ? `(${r.publication_year})` : ''}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <div className="space-y-4 p-5 border border-emerald-200 bg-emerald-50 rounded-lg">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Article Title *</label>
-                  <input 
-                    type="text" required={isNewReference}
-                    placeholder="e.g. Endophytic fungi of medicinal plants..."
-                    value={formData.new_reference_title}
-                    onChange={(e) => setFormData({...formData, new_reference_title: e.target.value})}
-                    className="w-full rounded-lg border-slate-300 border p-2.5 focus:ring-emerald-500 focus:border-emerald-500 bg-white"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Publication Year</label>
-                    <input 
-                      type="number" placeholder="2024"
-                      value={formData.new_reference_year}
-                      onChange={(e) => setFormData({...formData, new_reference_year: e.target.value})}
-                      className="w-full rounded-lg border-slate-300 border p-2.5 focus:ring-emerald-500 focus:border-emerald-500 bg-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1">Link / DOI</label>
-                    <input 
-                      type="url" placeholder="https://doi.org/..."
-                      value={formData.new_reference_link}
-                      onChange={(e) => setFormData({...formData, new_reference_link: e.target.value})}
-                      className="w-full rounded-lg border-slate-300 border p-2.5 focus:ring-emerald-500 focus:border-emerald-500 bg-white"
-                    />
-                  </div>
-                </div>
+            {/* Field: NCBI Accession Number */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-sm font-semibold text-slate-800">
+                  NCBI Accession Number
+                </label>
+                {formData.ncbi_accession && (
+                  <a
+                    href={`https://www.ncbi.nlm.nih.gov/search/all/?term=${encodeURIComponent(formData.ncbi_accession.trim())}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 hover:underline flex items-center gap-1"
+                    title="Search accession in NCBI"
+                  >
+                    <span>Verify on NCBI</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                )}
               </div>
-            )}
+
+              <div className="relative">
+                <Binary className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                <input 
+                  type="text" 
+                  placeholder="e.g. OQ542198, PRJNA912834, SRR21894012"
+                  value={formData.ncbi_accession}
+                  onChange={(e) => setFormData({ ...formData, ncbi_accession: e.target.value.toUpperCase() })}
+                  className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border-slate-300 border focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 bg-white text-sm font-mono uppercase"
+                />
+              </div>
+              <p className="text-[11px] text-slate-400">
+                GenBank, BioProject, SRA Run, or BioSample accession assigned by NCBI to this sample.
+              </p>
+            </div>
+
+          </div>
+        </section>
+
+        {/* SECTION 6: PROVENANCE, LITERATURE & METADATA */}
+        <section className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 sm:p-8 space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-100">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-amber-50 text-amber-700 border border-amber-200 flex items-center justify-center font-bold text-sm">
+                6
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">
+                  Observation Date & Literature Citation
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Document the publication source, sampling date, and experimental remarks.
+                </p>
+              </div>
+            </div>
+
+            <button 
+              type="button" 
+              onClick={() => setIsNewReference(!isNewReference)} 
+              className="text-xs font-semibold text-amber-700 hover:text-amber-800 hover:underline flex items-center gap-1 cursor-pointer self-start sm:self-center"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>{isNewReference ? "Select Existing Reference" : "+ Add New Reference"}</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            
+            {/* Field: Observation Date */}
+            <div className="space-y-1.5">
+              <label className="block text-sm font-semibold text-slate-800">
+                Observation Date *
+              </label>
+              <div className="relative">
+                <Calendar className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                <input 
+                  type="date" 
+                  required
+                  value={formData.observation_date}
+                  onChange={(e) => setFormData({ ...formData, observation_date: e.target.value })}
+                  className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border-slate-300 border focus:ring-2 focus:ring-amber-500/20 focus:border-amber-600 bg-white text-sm"
+                />
+              </div>
+              <p className="text-[11px] text-slate-400">Date field observation or sample was collected.</p>
+            </div>
+
+            {/* Field: Reference Selection (2 cols) */}
+            <div className="space-y-1.5 md:col-span-2">
+              <label className="block text-sm font-semibold text-slate-800">
+                Published Study / Literature Reference (Optional)
+              </label>
+
+              {!isNewReference ? (
+                <select 
+                  value={formData.reference_id}
+                  onChange={(e) => setFormData({ ...formData, reference_id: e.target.value })}
+                  className="w-full rounded-xl border-slate-300 border p-2.5 focus:ring-2 focus:ring-amber-500/20 focus:border-amber-600 bg-white text-sm"
+                >
+                  <option value="">None / Unpublished Field Data</option>
+                  {masterData.references?.map(r => (
+                    <option key={r.reference_id} value={r.reference_id}>
+                      {r.title} {r.publication_year ? `(${r.publication_year})` : ''}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="space-y-3 p-4 border border-amber-200 bg-amber-50/60 rounded-xl">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">Article Title *</label>
+                    <input 
+                      type="text" 
+                      required={isNewReference}
+                      placeholder="e.g. Endophytic fungi of drought-tolerant cereal crops..."
+                      value={formData.new_reference_title}
+                      onChange={(e) => setFormData({ ...formData, new_reference_title: e.target.value })}
+                      className="w-full rounded-lg border-slate-300 border p-2 text-xs bg-white focus:ring-2 focus:ring-amber-500/20 focus:border-amber-600"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">Publication Year</label>
+                      <input 
+                        type="number" 
+                        placeholder="2024"
+                        value={formData.new_reference_year}
+                        onChange={(e) => setFormData({ ...formData, new_reference_year: e.target.value })}
+                        className="w-full rounded-lg border-slate-300 border p-2 text-xs bg-white focus:ring-2 focus:ring-amber-500/20 focus:border-amber-600"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">DOI / Web Link</label>
+                      <input 
+                        type="url" 
+                        placeholder="https://doi.org/10.1016/..."
+                        value={formData.new_reference_link}
+                        onChange={(e) => setFormData({ ...formData, new_reference_link: e.target.value })}
+                        className="w-full rounded-lg border-slate-300 border p-2 text-xs bg-white focus:ring-2 focus:ring-amber-500/20 focus:border-amber-600"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+              <p className="text-[11px] text-slate-400">Links observation to peer-reviewed source literature.</p>
+            </div>
+
+          </div>
+        </section>
+
+        {/* BOTTOM SUBMISSION STRIP */}
+        <div className="p-6 bg-white border border-slate-200 rounded-2xl shadow-xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="space-y-0.5">
+            <span className="text-xs font-bold text-slate-800 uppercase tracking-wider block">
+              Ready to Log
+            </span>
+            <p className="text-xs text-slate-500">
+              {projectedCount > 0 ? (
+                <>Will record <strong className="text-emerald-700 font-semibold">{projectedCount}</strong> observation item(s) for specimen <span className="font-mono">{formData.specimen_identifier || 'Auto-ID'}</span>.</>
+              ) : (
+                'Select plant structures and endophytes above to preview logged count.'
+              )}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setFormData({
+                  specimen_identifier: '',
+                  crop_species_id: '',
+                  new_crop_name: '',
+                  new_crop_scientific: '',
+                  new_crop_group: '',
+                  latitude: '',
+                  longitude: '',
+                  location_estimated: false,
+                  endophyte_ids: [],
+                  plant_structure_ids: [],
+                  reference_id: '',
+                  new_reference_title: '',
+                  new_reference_year: '',
+                  new_reference_link: '',
+                  new_endophyte_name: '',
+                  new_endophyte_type_id: '',
+                  sequencing_method_id: '',
+                  new_sequencing_name: '',
+                  new_sequencing_platform: '',
+                  ncbi_accession: '',
+                  observation_date: new Date().toISOString().split('T')[0],
+                  created_by: 'Researcher Admin',
+                  isolation_notes: ''
+                });
+                setIsNewCrop(false);
+                setIsNewReference(false);
+                setIsNewEndophyte(false);
+                setIsNewSequencingMethod(false);
+              }}
+              className="px-4 py-2.5 rounded-xl border border-slate-300 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
+            >
+              Reset Form
+            </button>
+
+            <button 
+              type="submit" 
+              disabled={isSubmitting}
+              className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-semibold text-sm text-white shadow-xs transition-all cursor-pointer ${
+                isSubmitting
+                  ? 'bg-slate-400 cursor-not-allowed opacity-75'
+                  : 'bg-emerald-600 hover:bg-emerald-700 hover:shadow-sm'
+              }`}
+            >
+              {isSubmitting ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Saving Observation & Specimen...</span>
+                </>
+              ) : (
+                <>
+                  <FilePlus className="w-4 h-4" />
+                  <span>Save Observation & Specimen</span>
+                </>
+              )}
+            </button>
           </div>
         </div>
 
-        <div className="pt-4 border-t border-slate-100 flex justify-end">
-          <button type="submit" className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2 px-6 rounded-lg transition-colors flex items-center cursor-pointer">
-            <FilePlus className="w-5 h-5 mr-2" />
-            Save Observation
-          </button>
-        </div>
       </form>
     </div>
   );
