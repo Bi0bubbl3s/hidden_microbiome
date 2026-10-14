@@ -660,10 +660,10 @@ async function startServer() {
       const identifier = specimen_identifier || `SPEC-${new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14)}`;
       targetSpecimen = {
         plant_specimen_id: nextSpecimenId++,
-        crop_species_id: parseInt(crop_species_id),
+        crop_species_id: parseInt(crop_species_id) || (crops[0]?.crop_species_id ?? 1),
         specimen_identifier: identifier,
-        latitude: parseFloat(latitude),
-        longitude: parseFloat(longitude),
+        latitude: isNaN(parseFloat(latitude)) ? 0 : parseFloat(latitude),
+        longitude: isNaN(parseFloat(longitude)) ? 0 : parseFloat(longitude),
         location_estimated: Boolean(location_estimated),
         created_by: created_by || 'Researcher Admin',
         created_at: new Date().toISOString(),
@@ -707,7 +707,7 @@ async function startServer() {
 
     res.json({
       message: 'Transaction successful',
-      plant_specimen_id: newSpecimen.plant_specimen_id,
+      plant_specimen_id: targetSpecimen ? targetSpecimen.plant_specimen_id : null,
       observations_logged: createdCount,
     });
   });
